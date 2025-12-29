@@ -1,0 +1,92 @@
+# Instagram Reel Transcriber Configuration
+
+# Input Configuration
+input:
+  csv_path: "data/input/reels.csv"
+  url_column: "url"
+  skip_processed: true
+  validate_urls: true
+
+# Download Configuration
+download:
+  concurrent_workers: 12
+  timeout: 30
+  retry_attempts: 3
+  retry_delay: 2
+  rate_limit_delay: 0.5
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+  format: "bestaudio"
+  extract_audio: true
+  audio_format: "wav"
+  audio_quality: "0"
+  
+# Transcription Configuration
+transcription:
+  model: "base"
+  language: "auto"
+  device: "cuda"
+  compute_type: "float16"
+  beam_size: 5
+  best_of: 5
+  temperature: 0.0
+  vad_filter: false
+  condition_on_previous_text: true
+  batch_size: 1
+
+# Caption Configuration
+captions:
+  enabled: true
+  words_per_line: 10
+  max_lines: 2
+  format: "srt"  # srt or vtt
+
+# Output Configuration
+output:
+  directory: "data/output/transcriptions"
+  format: "txt"
+  encoding: "utf-8"
+  naming_pattern: "{timestamp}_{id}"
+  include_metadata: true
+  metadata:
+    - url
+    - timestamp
+    - duration
+    - language
+    - model
+    - processing_time
+
+# Processing Configuration
+processing:
+  batch_size: 100
+  temp_directory: "data/temp"
+  cleanup_temp: true
+  save_checkpoint: true
+  checkpoint_interval: 10
+  checkpoint_file: "logs/checkpoint.json"
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  console: true
+  file: "logs/app.log"
+  max_file_size: "10MB"
+  backup_count: 5
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}"
+  error_file: "logs/errors.log"
+
+# Performance Monitoring
+monitoring:
+  enabled: true
+  track_metrics: true
+  report_interval: 30
+  save_report: true
+  report_path: "data/output/reports"
+
+# Error Handling
+error_handling:
+  continue_on_error: true
+  max_consecutive_errors: 5
+  save_failed_urls: true
+  failed_urls_path: "logs/failed_urls.txt"
+  exponential_backoff: true
+  max_backoff_time: 60
