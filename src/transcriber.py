@@ -1,14 +1,15 @@
 """
 Transcriber Module
 
-Handles audio transcription using Faster-Whisper with GPU acceleration.
-Processes audio files from downloader and generates text transcriptions.
+Handles audio transcription using the Groq Whisper Large API.
+Processes audio files from the downloader and generates text transcriptions.
 """
 
+import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-import torch
 
 from loguru import logger
 from tqdm import tqdm
@@ -17,310 +18,330 @@ from config import TranscriptionConfig
 from utils import ensure_directory, format_duration
 
 
+# Groq API file size limit in bytes (25 MB hard limit; use 24 MB as a safe threshold)
+_GROQ_SIZE_LIMIT_BYTES = 24 * 1024 * 1024
+
+
 class TranscriptionError(Exception):
     """Custom exception for transcription errors."""
     pass
 
 
-class ReelTranscriber:
+class GroqTranscriber:
     """
-    Transcribes audio using Faster-Whisper (CTranslate2-based implementation).
+    Transcribes audio using the Groq Whisper Large v3 API.
 
     Features:
-    - GPU acceleration (CUDA)
+    - Cloud-based inference via Groq (no local GPU required)
     - Automatic language detection
-    - Multi-language support (English, Hindi, 99+ languages)
-    - Faster inference with CTranslate2
-    - VAD (Voice Activity Detection) filtering
-    - Progress tracking
-    - Error handling
+    - Multi-language support (99+ languages)
+    - Large file handling via ffmpeg MP3 compression
+    - Batch processing with progress tracking
+    - Structured error handling
     """
 
-    def __init__(self, config: TranscriptionConfig):
+    def __init__(self, config: TranscriptionConfig) -> None:
         """
-        Initialize transcriber.
+        Initialize the Groq transcriber.
 
         Args:
             config: Transcription configuration
+
+        Raises:
+            TranscriptionError: If GROQ_API_KEY is not set in the environment.
         """
         self.config = config
-        self.model = None
-        self.device = None
 
-        # Check if Faster-Whisper is available
-        if not self._check_whisper():
-            raise RuntimeError("faster-whisper is not installed. Install with: pip install faster-whisper")
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            raise TranscriptionError(
+                "GROQ_API_KEY environment variable is not set. "
+                "Add it to your .env file or export it before running."
+            )
 
-        # Load model
-        self._load_model()
+        try:
+            from groq import Groq
+            self._client = Groq(api_key=api_key)
+        except ImportError as exc:
+            raise TranscriptionError(
+                "groq package is not installed. Install with: pip install groq>=0.9.0"
+            ) from exc
 
-        logger.info("Transcriber initialized")
-        logger.info(f"Model: {config.model}")
-        logger.info(f"Device: {self.device}")
-        logger.info(f"Compute type: {self.config.compute_type}")
+        logger.info("GroqTranscriber initialized")
+        logger.info(f"API provider: {config.api_provider}")
         logger.info(f"Language: {config.language}")
 
-    def _check_whisper(self) -> bool:
-        """Check if Faster-Whisper is available."""
-        try:
-            from faster_whisper import WhisperModel
-            return True
-        except ImportError:
-            return False
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
-    def _load_model(self) -> None:
-        """Load Faster-Whisper model."""
-        from faster_whisper import WhisperModel
-
-        logger.info(f"Loading Faster-Whisper model: {self.config.model}")
-
-        # Determine device
-        if self.config.device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = self.config.device
-
-        # Validate device
-        if self.device == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA not available, falling back to CPU")
-            self.device = "cpu"
-
-        # Adjust compute_type based on device
-        compute_type = self.config.compute_type
-        if self.device == "cpu":
-            # CPU doesn't support float16, use int8 or float32
-            if compute_type == "float16":
-                compute_type = "int8"
-                logger.info("Adjusted compute_type to 'int8' for CPU")
-
-        # Load model
-        try:
-            start_time = time.time()
-            self.model = WhisperModel(
-                self.config.model,
-                device=self.device,
-                compute_type=compute_type,
-                download_root=None,  # Use default cache
-                num_workers=1  # Number of workers for parallel processing
-            )
-            load_time = time.time() - start_time
-
-            logger.info(f"Model loaded in {load_time:.2f}s")
-
-            # Log GPU info if using CUDA
-            if self.device == "cuda":
-                gpu_name = torch.cuda.get_device_name(0)
-                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-                logger.info(f"GPU: {gpu_name}")
-                logger.info(f"GPU Memory: {gpu_memory:.1f} GB")
-
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            raise TranscriptionError(f"Failed to load Faster-Whisper model: {e}")
-    
-    def transcribe_audio(
-        self,
-        audio_file: Path,
-        language: Optional[str] = None
-    ) -> Tuple[bool, Optional[str], Optional[Dict], Optional[str]]:
+    def _compress_to_mp3(self, audio_path: Path) -> Path:
         """
-        Transcribe a single audio file.
+        Compress an audio file to MP3 using ffmpeg so it fits under Groq's
+        25 MB file-size limit.
 
         Args:
-            audio_file: Path to audio file
-            language: Optional language override (e.g., "en", "hi")
+            audio_path: Path to the original audio file.
 
         Returns:
-            Tuple of (success, transcription_text, metadata, error_message)
+            Path to the compressed MP3 file (written alongside the original).
+
+        Raises:
+            TranscriptionError: If ffmpeg is unavailable or conversion fails.
         """
-        if not audio_file.exists():
-            return False, None, None, f"Audio file not found: {audio_file}"
+        mp3_path = audio_path.with_suffix(".compressed.mp3")
+        logger.info(
+            f"Audio file exceeds 24 MB — compressing to MP3: {audio_path.name}"
+        )
+
+        cmd = [
+            "ffmpeg",
+            "-y",              # overwrite output if it exists
+            "-i", str(audio_path),
+            "-vn",             # no video
+            "-ar", "16000",    # 16 kHz sample rate (adequate for speech)
+            "-ac", "1",        # mono
+            "-b:a", "32k",     # low bitrate keeps file small
+            str(mp3_path),
+        ]
 
         try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except FileNotFoundError as exc:
+            raise TranscriptionError(
+                "ffmpeg is not installed or not on PATH. "
+                "Install ffmpeg to handle audio files larger than 24 MB."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TranscriptionError(
+                f"ffmpeg timed out while compressing {audio_path.name}"
+            ) from exc
+
+        if result.returncode != 0:
+            raise TranscriptionError(
+                f"ffmpeg compression failed for {audio_path.name}: {result.stderr}"
+            )
+
+        logger.info(
+            f"Compressed {audio_path.name} "
+            f"({audio_path.stat().st_size / (1024**2):.1f} MB) → "
+            f"{mp3_path.name} "
+            f"({mp3_path.stat().st_size / (1024**2):.1f} MB)"
+        )
+        return mp3_path
+
+    def _resolve_audio_path(self, audio_path: Path) -> Path:
+        """
+        Return a Groq-uploadable audio path, compressing first if needed.
+
+        Args:
+            audio_path: Original audio file path.
+
+        Returns:
+            Path that is safe to send to the Groq API.
+        """
+        file_size = audio_path.stat().st_size
+        if file_size > _GROQ_SIZE_LIMIT_BYTES:
+            return self._compress_to_mp3(audio_path)
+        return audio_path
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def transcribe_audio(
+        self,
+        audio_path: Path,
+        language: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str], Optional[Dict], Optional[str]]:
+        """
+        Transcribe a single audio file via the Groq Whisper Large v3 API.
+
+        Args:
+            audio_path: Path to the audio file.
+            language: Optional ISO-639-1 language code override (e.g. "en", "hi").
+                      Pass None or "auto" for automatic language detection.
+
+        Returns:
+            A 4-tuple of:
+              - success (bool)
+              - transcription text (str | None)
+              - metadata dict (Dict | None) containing:
+                  language, duration, processing_time, confidence,
+                  segments_count, segments
+              - error message (str | None)
+        """
+        if not audio_path.exists():
+            return False, None, None, f"Audio file not found: {audio_path}"
+
+        # Determine effective language (None == auto-detect in Whisper)
+        effective_language: Optional[str] = language or self.config.language
+        if effective_language == "auto":
+            effective_language = None
+
+        upload_path = audio_path
+        try:
+            upload_path = self._resolve_audio_path(audio_path)
             start_time = time.time()
 
-            # Determine language
-            lang = language or self.config.language
-            if lang == "auto":
-                lang = None  # Let Whisper auto-detect
+            logger.debug(f"Sending to Groq API: {upload_path.name}")
 
-            # Transcribe using faster-whisper
-            # Note: faster-whisper returns (segments, info) tuple
-            logger.debug(f"Transcribing: {audio_file.name}")
-
-            segments, info = self.model.transcribe(
-                str(audio_file),
-                language=lang,
-                task="transcribe",
-                beam_size=self.config.beam_size,
-                best_of=self.config.best_of,
-                temperature=self.config.temperature,
-                condition_on_previous_text=self.config.condition_on_previous_text,
-                vad_filter=self.config.vad_filter,
-                vad_parameters=None  # Use default VAD parameters
-            )
+            with open(upload_path, "rb") as audio_file:
+                response = self._client.audio.transcriptions.create(
+                    model="whisper-large-v3",
+                    file=audio_file,
+                    response_format="verbose_json",
+                    language=effective_language,
+                )
 
             processing_time = time.time() - start_time
 
-            # Extract transcription from segments
-            # Note: segments is a generator in faster-whisper
-            segments_list = list(segments)
-            transcription = " ".join(segment.text for segment in segments_list).strip()
-
-            # Get detected language from info
-            detected_language = info.language if hasattr(info, 'language') else "unknown"
-
-            # Calculate confidence from segments
-            if segments_list:
-                # faster-whisper provides avg_logprob and no_speech_prob per segment
-                avg_confidence = sum(
-                    1.0 - segment.no_speech_prob
-                    for segment in segments_list
-                    if hasattr(segment, 'no_speech_prob')
-                ) / len(segments_list) if segments_list else None
-            else:
-                avg_confidence = None
-
-            # Get duration from info
-            duration = info.duration if hasattr(info, 'duration') else 0
-
-            # Convert segments to dictionary format for caption generation
-            segments_data = [
+            # Map Groq response segments to the format captions.py expects
+            raw_segments = getattr(response, "segments", None) or []
+            segments_data: List[Dict] = [
                 {
-                    'start': segment.start,
-                    'end': segment.end,
-                    'text': segment.text
+                    "start": float(seg.get("start", 0.0) if isinstance(seg, dict) else seg.start),
+                    "end": float(seg.get("end", 0.0) if isinstance(seg, dict) else seg.end),
+                    "text": (seg.get("text", "") if isinstance(seg, dict) else seg.text).strip(),
                 }
-                for segment in segments_list
+                for seg in raw_segments
             ]
 
-            # Metadata
-            metadata = {
+            # Full transcription text
+            transcription = getattr(response, "text", "") or ""
+            transcription = transcription.strip()
+
+            # Detected language
+            detected_language = getattr(response, "language", "unknown") or "unknown"
+
+            # Duration from response; fall back to last segment end time
+            duration: float = getattr(response, "duration", 0.0) or 0.0
+            if duration == 0.0 and segments_data:
+                duration = segments_data[-1]["end"]
+
+            metadata: Dict = {
                 "language": detected_language,
                 "duration": duration,
                 "processing_time": processing_time,
-                "confidence": avg_confidence,
-                "segments_count": len(segments_list),
-                "segments": segments_data  # Include segments for caption generation
+                "confidence": None,  # Groq verbose_json does not expose logprobs
+                "segments_count": len(segments_data),
+                "segments": segments_data,
             }
 
-            logger.debug(f"Transcribed {audio_file.name} in {processing_time:.2f}s")
-            logger.debug(f"Language: {detected_language}, Length: {len(transcription)} chars")
+            logger.debug(
+                f"Transcribed {audio_path.name} in {processing_time:.2f}s — "
+                f"language: {detected_language}, "
+                f"chars: {len(transcription)}, "
+                f"segments: {len(segments_data)}"
+            )
 
             return True, transcription, metadata, None
 
-        except Exception as e:
-            error_msg = f"Transcription failed: {str(e)}"
-            logger.error(f"{audio_file.name}: {error_msg}")
+        except TranscriptionError:
+            raise  # Let compression errors propagate unmodified
+        except Exception as exc:
+            error_msg = f"Transcription failed: {exc}"
+            logger.error(f"{audio_path.name}: {error_msg}")
             return False, None, None, error_msg
-    
+        finally:
+            # Remove temporary compressed file if one was created
+            if upload_path != audio_path and upload_path.exists():
+                try:
+                    upload_path.unlink()
+                    logger.debug(f"Removed temporary file: {upload_path.name}")
+                except OSError as exc:
+                    logger.warning(f"Could not remove temporary file {upload_path.name}: {exc}")
+
     def transcribe_batch(
         self,
         audio_records: List[Dict],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
     ) -> Tuple[List[Dict], List[Dict]]:
         """
         Transcribe multiple audio files.
-        
+
         Args:
-            audio_records: List of records with 'audio_file' key
-            progress_callback: Optional callback for progress updates
-            
+            audio_records: List of record dicts, each must contain an 'audio_file' key.
+            progress_callback: Optional callable(completed: int, total: int) for progress.
+
         Returns:
-            Tuple of (successful_transcriptions, failed_transcriptions)
+            Tuple of (successful_transcriptions, failed_transcriptions).
+            Each item in the lists is the original record dict augmented with
+            transcription results.
         """
-        successful = []
-        failed = []
-        
-        logger.info(f"Starting batch transcription of {len(audio_records)} audio files")
-        logger.info(f"Model: {self.config.model}, Device: {self.device}")
-        
-        # Create progress bar
-        with tqdm(total=len(audio_records), desc="Transcribing audio", unit="file") as pbar:
+        successful: List[Dict] = []
+        failed: List[Dict] = []
+        total = len(audio_records)
+
+        logger.info(f"Starting batch transcription of {total} audio files")
+        logger.info(f"API provider: {self.config.api_provider}")
+
+        with tqdm(total=total, desc="Transcribing audio", unit="file") as pbar:
             for record in audio_records:
+                reel_id = record.get("reel_id", "unknown")
                 try:
-                    audio_file = Path(record['audio_file'])
-                    
-                    # Transcribe
+                    audio_file = Path(record["audio_file"])
                     success, transcription, metadata, error = self.transcribe_audio(audio_file)
-                    
+
                     if success:
-                        result = {
+                        successful.append({
                             **record,
-                            'transcription': transcription,
-                            'transcription_metadata': metadata,
-                            'transcription_success': True
-                        }
-                        successful.append(result)
-                        logger.debug(f"Success: {record['reel_id']}")
+                            "transcription": transcription,
+                            "transcription_metadata": metadata,
+                            "transcription_success": True,
+                        })
+                        logger.debug(f"Success: {reel_id}")
                     else:
-                        result = {
+                        failed.append({
                             **record,
-                            'transcription_success': False,
-                            'error': error
-                        }
-                        failed.append(result)
-                        logger.warning(f"Failed: {record['reel_id']} - {error}")
-                    
-                    # Update progress
-                    pbar.update(1)
-                    
-                    # Call progress callback if provided
-                    if progress_callback:
-                        progress_callback(len(successful) + len(failed), len(audio_records))
-                
-                except Exception as e:
-                    logger.error(f"Unexpected error transcribing {record.get('reel_id', 'unknown')}: {e}")
+                            "transcription_success": False,
+                            "error": error,
+                        })
+                        logger.warning(f"Failed: {reel_id} — {error}")
+
+                except Exception as exc:
+                    logger.error(f"Unexpected error transcribing {reel_id}: {exc}")
                     failed.append({
                         **record,
-                        'transcription_success': False,
-                        'error': str(e)
+                        "transcription_success": False,
+                        "error": str(exc),
                     })
-                    pbar.update(1)
-        
-        logger.info(f"Batch transcription complete: {len(successful)} successful, {len(failed)} failed")
-        
-        return successful, failed
-    
-    def get_available_models(self) -> List[str]:
-        """Get list of available Whisper models."""
-        # faster-whisper supports the same model names as openai-whisper
-        return ["tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium", "medium.en", "large-v1", "large-v2", "large-v3", "large"]
-    
-    def get_device_info(self) -> Dict:
-        """Get information about the device being used."""
-        info = {
-            "device": self.device,
-            "cuda_available": torch.cuda.is_available(),
-        }
-        
-        if torch.cuda.is_available():
-            info.update({
-                "gpu_name": torch.cuda.get_device_name(0),
-                "gpu_memory_total": torch.cuda.get_device_properties(0).total_memory / (1024**3),
-                "gpu_memory_allocated": torch.cuda.memory_allocated(0) / (1024**3),
-                "gpu_memory_reserved": torch.cuda.memory_reserved(0) / (1024**3),
-            })
-        
-        return info
 
+                pbar.update(1)
+                if progress_callback:
+                    progress_callback(len(successful) + len(failed), total)
+
+        logger.info(
+            f"Batch transcription complete: {len(successful)} successful, {len(failed)} failed"
+        )
+        return successful, failed
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience function
+# ---------------------------------------------------------------------------
 
 def transcribe_audio_files(
     audio_records: List[Dict],
     config: Optional[TranscriptionConfig] = None,
-    progress_callback: Optional[callable] = None
+    progress_callback: Optional[callable] = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """
-    Convenience function to transcribe audio files.
-    
+    Convenience function to transcribe a list of audio records.
+
     Args:
-        audio_records: List of records with 'audio_file' key
-        config: Optional transcription configuration
-        progress_callback: Optional callback for progress updates
-        
+        audio_records: List of records with an 'audio_file' key.
+        config: Optional TranscriptionConfig; loads from config.yaml if omitted.
+        progress_callback: Optional callable(completed: int, total: int).
+
     Returns:
-        Tuple of (successful_transcriptions, failed_transcriptions)
-        
+        Tuple of (successful_transcriptions, failed_transcriptions).
+
     Example:
         >>> from downloader import download_reels
         >>> successful_downloads, _ = download_reels(urls)
@@ -330,82 +351,53 @@ def transcribe_audio_files(
     if config is None:
         from config import load_config
         config = load_config().transcription
-    
-    transcriber = ReelTranscriber(config)
+
+    transcriber = GroqTranscriber(config)
     return transcriber.transcribe_batch(audio_records, progress_callback)
 
 
-# Testing and example usage
+# ---------------------------------------------------------------------------
+# Smoke test
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     import sys
-    from pathlib import Path
-    
-    # Add src to path
+
     sys.path.insert(0, str(Path(__file__).parent))
-    
+
     from config import load_config
-    
+
     print("=" * 70)
-    print("Transcriber Module - Test Mode")
+    print("Transcriber Module — Smoke Test")
     print("=" * 70)
     print()
-    
-    # Test 1: Check Faster-Whisper availability
-    print("Test 1: Checking Faster-Whisper availability...")
-    try:
-        from faster_whisper import WhisperModel
-        print("[OK] Faster-Whisper is installed")
-        print("  Available models: tiny, base, small, medium, large")
-    except ImportError:
-        print("[ERROR] Faster-Whisper is not installed")
-        print("  Install with: pip install faster-whisper")
-        sys.exit(1)
 
-    print()
-
-    # Test 2: Check CUDA availability
-    print("Test 2: Checking CUDA availability...")
-    if torch.cuda.is_available():
-        print("[OK] CUDA is available")
-        print(f"  Device: {torch.cuda.get_device_name(0)}")
-        print(f"  Memory: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f} GB")
+    # Test 1: API key presence
+    print("Test 1: Checking GROQ_API_KEY environment variable...")
+    api_key = os.environ.get("GROQ_API_KEY")
+    if api_key:
+        masked = api_key[:6] + "..." + api_key[-4:]
+        print(f"[OK] GROQ_API_KEY is set ({masked})")
     else:
-        print("[WARNING] CUDA not available (will use CPU)")
-        print("  Transcription will be slower without GPU")
-
-    print()
-
-    # Test 3: Initialize transcriber
-    print("Test 3: Initializing transcriber...")
-    try:
-        config = load_config()
-        transcriber = ReelTranscriber(config.transcription)
-        print("[OK] Transcriber initialized successfully")
-        print(f"  Model: {config.transcription.model}")
-        print(f"  Device: {transcriber.device}")
-        print(f"  Compute type: {config.transcription.compute_type}")
-    except Exception as e:
-        print(f"[ERROR] Failed to initialize: {e}")
+        print("[ERROR] GROQ_API_KEY is not set")
+        print("  Set it in your .env file: GROQ_API_KEY=your_key_here")
         sys.exit(1)
-    
-    print()
-    
-    # Test 4: Device info
-    print("Test 4: Device information...")
-    device_info = transcriber.get_device_info()
-    print(f"Device: {device_info['device']}")
-    print(f"CUDA Available: {device_info['cuda_available']}")
-    if device_info['cuda_available']:
-        print(f"GPU: {device_info['gpu_name']}")
-        print(f"Total Memory: {device_info['gpu_memory_total']:.1f} GB")
-    
-    print()
-    print("=" * 70)
-    print("Transcriber module test complete!")
-    print("=" * 70)
-    print()
-    print("To test with real audio files:")
-    print("1. Download some reels first (use test_download.py)")
-    print("2. Run: python test_transcribe.py")
+
     print()
 
+    # Test 2: Initialize transcriber
+    print("Test 2: Initializing GroqTranscriber...")
+    try:
+        cfg = load_config()
+        transcriber = GroqTranscriber(cfg.transcription)
+        print("[OK] GroqTranscriber initialized successfully")
+        print(f"  API provider: {cfg.transcription.api_provider}")
+        print(f"  Language: {cfg.transcription.language}")
+    except TranscriptionError as err:
+        print(f"[ERROR] {err}")
+        sys.exit(1)
+
+    print()
+    print("=" * 70)
+    print("Smoke test complete — ready to transcribe audio files.")
+    print("=" * 70)

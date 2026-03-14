@@ -19,19 +19,11 @@ download:
   extract_audio: true
   audio_format: "wav"
   audio_quality: "0"
-  
-# Transcription Configuration
+
+# Transcription Configuration (Groq Whisper Large v3)
 transcription:
-  model: "base"
+  api_provider: "groq"
   language: "auto"
-  device: "cuda"
-  compute_type: "float16"
-  beam_size: 5
-  best_of: 5
-  temperature: 0.0
-  vad_filter: false
-  condition_on_previous_text: true
-  batch_size: 1
 
 # Caption Configuration
 captions:
@@ -52,7 +44,7 @@ output:
     - timestamp
     - duration
     - language
-    - model
+    - api_provider
     - processing_time
 
 # Processing Configuration

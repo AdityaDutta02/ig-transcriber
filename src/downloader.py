@@ -5,6 +5,7 @@ Handles downloading videos from Instagram and YouTube using yt-dlp with parallel
 Extracts audio automatically and manages temporary files.
 """
 
+import os
 import time
 import tempfile
 from pathlib import Path
@@ -158,7 +159,41 @@ class VideoDownloader:
                     time.sleep(delay)
                 else:
                     logger.warning(f"All retry attempts failed for {platform}/{video_id}: {error_msg}")
-                    return False, None, f"Download failed after {self.config.retry_attempts} attempts: {error_msg}", platform
+                    ytdlp_error = f"Download failed after {self.config.retry_attempts} attempts: {error_msg}"
+
+                    # Attempt RapidAPI fallback only for Instagram — never for YouTube.
+                    if platform == "instagram":
+                        if not os.environ.get("RAPIDAPI_KEY"):
+                            logger.info(
+                                "RAPIDAPI_KEY not set; skipping RapidAPI fallback"
+                            )
+                            return False, None, ytdlp_error, platform
+
+                        logger.info(
+                            f"yt-dlp exhausted; trying RapidAPI fallback for {video_id}"
+                        )
+                        from rapidapi_downloader import RapidAPIDownloader
+
+                        rapidapi = RapidAPIDownloader()
+                        ra_success, ra_audio, ra_error, ra_source = (
+                            rapidapi.download_instagram(url, self.temp_dir)
+                        )
+
+                        if ra_success:
+                            logger.info(
+                                f"RapidAPI fallback succeeded ({ra_source}) for {video_id}"
+                            )
+                            return True, ra_audio, None, ra_source
+
+                        logger.warning(
+                            f"RapidAPI fallback also failed for {video_id}: {ra_error}"
+                        )
+                        combined_error = (
+                            f"{ytdlp_error}; RapidAPI fallback: {ra_error}"
+                        )
+                        return False, None, combined_error, ra_source
+
+                    return False, None, ytdlp_error, platform
 
         return False, None, "Download failed", platform
     

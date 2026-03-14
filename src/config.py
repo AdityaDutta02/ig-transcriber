@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, validator
 from pydantic_settings import BaseSettings
 
 
@@ -35,17 +35,17 @@ class DownloadConfig(BaseModel):
 
 
 class TranscriptionConfig(BaseModel):
-    """Transcription configuration."""
-    model: str = Field("base", pattern="^(tiny|base|small|medium|large)$")
+    """
+    Transcription configuration for the Groq Whisper Large v3 API.
+
+    Unknown fields from older config files (e.g. model, device, compute_type)
+    are silently ignored via ConfigDict(extra='ignore').
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    api_provider: str = "groq"
     language: str = "auto"
-    device: str = Field("cuda", pattern="^(cuda|cpu|auto)$")
-    compute_type: str = Field("float16", pattern="^(float16|float32|int8)$")
-    beam_size: int = Field(5, ge=1)
-    best_of: int = Field(5, ge=1)
-    temperature: float = Field(0.0, ge=0.0, le=1.0)
-    vad_filter: bool = True
-    condition_on_previous_text: bool = True
-    batch_size: int = Field(1, ge=1)
 
 
 class CaptionConfig(BaseModel):
@@ -64,7 +64,7 @@ class OutputConfig(BaseModel):
     naming_pattern: str = "{timestamp}_{id}"
     include_metadata: bool = True
     metadata: List[str] = Field(
-        default=["url", "timestamp", "duration", "language", "model", "processing_time"]
+        default=["url", "timestamp", "duration", "language", "api_provider", "processing_time"]
     )
 
 
@@ -124,48 +124,46 @@ class AppConfig(BaseModel):
 def load_config(config_path: str = "config/config.yaml") -> AppConfig:
     """
     Load configuration from YAML file.
-    
+
     Args:
         config_path: Path to configuration YAML file
-        
+
     Returns:
         AppConfig object with validated configuration
-        
+
     Raises:
         FileNotFoundError: If config file doesn't exist
         ValueError: If config is invalid
     """
     config_file = Path(config_path)
-    
+
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
-    
+
     with open(config_file, "r") as f:
         config_dict = yaml.safe_load(f)
-    
+
     return AppConfig(**config_dict)
 
 
 def save_config(config: AppConfig, config_path: str = "config/config.yaml") -> None:
     """
     Save configuration to YAML file.
-    
+
     Args:
         config: AppConfig object
         config_path: Path to save configuration
     """
     config_file = Path(config_path)
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    
+
     with open(config_file, "w") as f:
         yaml.dump(config.model_dump(), f, default_flow_style=False, sort_keys=False)
 
 
-# Stub for future implementation
 if __name__ == "__main__":
-    # Test configuration loading
     config = load_config()
-    print(f"Configuration loaded successfully!")
-    print(f"Whisper model: {config.transcription.model}")
-    print(f"Device: {config.transcription.device}")
+    print("Configuration loaded successfully!")
+    print(f"API provider: {config.transcription.api_provider}")
+    print(f"Language: {config.transcription.language}")
     print(f"Download workers: {config.download.concurrent_workers}")

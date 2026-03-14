@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from loguru import logger
 from downloader import download_videos, VideoDownloader
-from transcriber import transcribe_audio_files, ReelTranscriber
+from transcriber import transcribe_audio_files, GroqTranscriber
 from captions import CaptionGenerator
 from config import load_config
 from utils import validate_video_url, detect_platform, extract_video_id
@@ -267,7 +267,7 @@ def process_single_url(url, operations, cleanup_options, output_dir, config):
             print("[ERROR] No audio file available. Please download first.")
             return results
 
-        transcriber = ReelTranscriber(config.transcription)
+        transcriber = GroqTranscriber(config.transcription)
         audio_path = Path(url_record["audio_file"])
         success, transcription, metadata, error = transcriber.transcribe_audio(audio_path)
 
