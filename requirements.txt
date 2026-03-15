@@ -30,3 +30,5 @@ streamlit>=1.28.0
 streamlit-authenticator>=0.3.1
 google-auth>=2.23.0
 bcrypt>=4.0.0
+
+python-dotenv
