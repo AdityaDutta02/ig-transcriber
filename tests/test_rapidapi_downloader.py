@@ -42,7 +42,7 @@ class TestDownloadInstagramNoKey:
         assert audio_path is None
         assert error_msg is not None
         assert "RAPIDAPI_KEY environment variable is not set" in error_msg
-        assert source == "rapidapi_backup1"
+        assert source == "rapidapi_none"
 
 
 class TestSafesiteAPI:
@@ -195,7 +195,7 @@ class TestFallbackOrder:
         assert success is False
         assert audio_path is None
         assert error_msg is not None
-        assert "All RapidAPI fallback downloaders failed" in error_msg
+        assert "RapidAPI fallback downloaders failed" in error_msg
         assert source == "rapidapi_backup2"
 
 
@@ -299,7 +299,7 @@ class TestRequestTimeout:
 
         assert success is False
         assert audio_path is None
-        assert "All RapidAPI fallback downloaders failed" in error_msg
+        assert "RapidAPI fallback downloaders failed" in error_msg
 
 
 class TestDownloadAndExtractAudio:

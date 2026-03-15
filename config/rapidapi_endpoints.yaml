@@ -1,0 +1,46 @@
+# RapidAPI Fallback Endpoints for Instagram Downloads
+# ──────────────────────────────────────────────────────────────────
+# Edit this file to add, remove, or reorder backup downloaders.
+# Endpoints are tried top-to-bottom after yt-dlp fails.
+#
+# Each entry needs:
+#   name:     Human-readable label (shown in UI badge)
+#   host:     The X-RapidAPI-Host value
+#   path:     URL path (appended to https://<host>)
+#   method:   HTTP method (GET or POST)
+#   param:    Query/body parameter name for the Instagram URL
+#
+# No code changes needed — just edit this file and restart the server.
+# ──────────────────────────────────────────────────────────────────
+
+endpoints:
+  - name: "RapidAPI Backup 1"
+    host: "instagram-downloader-download-instagram-stories-videos4.p.rapidapi.com"
+    path: "/index"
+    method: "GET"
+    param: "url"
+
+  - name: "RapidAPI Backup 2"
+    host: "instagram-reels-downloader-api.p.rapidapi.com"
+    path: "/download"
+    method: "GET"
+    param: "url"
+
+  - name: "RapidAPI Backup 3"
+    host: "instagram-story-downloader-media-downloader.p.rapidapi.com"
+    path: "/index"
+    method: "GET"
+    param: "url"
+
+  - name: "RapidAPI Backup 4"
+    host: "instagram-downloader-scraper-reels-igtv-posts-stories.p.rapidapi.com"
+    path: "/scraper"
+    method: "GET"
+    param: "url"
+
+  # ── Add more endpoints below ──────────────────────────────────
+  # - name: "RapidAPI Backup 3"
+  #   host: "some-other-api.p.rapidapi.com"
+  #   path: "/api/download"
+  #   method: "GET"
+  #   param: "url"
