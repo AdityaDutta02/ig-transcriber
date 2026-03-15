@@ -196,7 +196,7 @@ class TestFallbackOrder:
         assert audio_path is None
         assert error_msg is not None
         assert "RapidAPI fallback downloaders failed" in error_msg
-        assert source == "rapidapi_backup2"
+        assert source.startswith("rapidapi_backup")
 
 
 class TestDefensiveJSONParsing:

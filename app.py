@@ -27,6 +27,7 @@ from ui_helpers import (
     render_downloader_badge,
     render_platform_badge,
 )
+from auth import check_auth, render_user_menu
 from ui_styles import CUSTOM_CSS
 from utils import detect_platform, extract_video_id, validate_video_url
 
@@ -292,11 +293,16 @@ def render_results_card(data: dict, url: str) -> None:
 
 def main() -> None:
     """Entry point for the Streamlit app."""
+    # ── Auth gate ──────────────────────────────────────────────────────────
+    if not check_auth():
+        st.stop()
+
     config = get_config()
     downloader = get_downloader(config)
     transcriber = get_transcriber(config)
 
     operations = render_sidebar(config)
+    render_user_menu()
 
     # ── Header ────────────────────────────────────────────────────────────
     st.title("Video Transcriber")
