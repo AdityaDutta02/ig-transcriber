@@ -9,10 +9,13 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-import streamlit as st
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-load_dotenv()
+import streamlit as st
 
 # ── Path setup ────────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent / "src"))
