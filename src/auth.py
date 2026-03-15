@@ -13,12 +13,6 @@ import streamlit as st
 from loguru import logger
 
 try:
-    import streamlit_authenticator as stauth
-except ImportError:
-    stauth = None
-    logger.warning("streamlit-authenticator not installed — email/password login unavailable")
-
-try:
     from google.oauth2 import id_token
     from google.auth.transport import requests as google_requests
 except ImportError:
