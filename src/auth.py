@@ -2,23 +2,17 @@
 Authentication Module
 
 Simple email/password + Google OAuth login for the Streamlit app.
-Uses streamlit-authenticator for credential management and
-google-auth-oauthlib for Google sign-in.
+Uses redirect-based OAuth2 flow for Google sign-in and bcrypt for
+email/password verification.
 """
 
 import os
+import urllib.parse
 from typing import Optional
 
+import requests as http_requests
 import streamlit as st
 from loguru import logger
-
-try:
-    from google.oauth2 import id_token
-    from google.auth.transport import requests as google_requests
-except ImportError:
-    id_token = None
-    google_requests = None
-    logger.warning("google-auth not installed — Google login unavailable")
 
 
 _LOGIN_CSS = """
@@ -105,31 +99,74 @@ def _get_google_client_id() -> Optional[str]:
     return os.environ.get("GOOGLE_CLIENT_ID")
 
 
-def _verify_google_token(token: str) -> Optional[dict]:
-    """Verify a Google ID token and return user info."""
-    if id_token is None or google_requests is None:
-        logger.error("google-auth not installed")
-        return None
+def _get_google_client_secret() -> Optional[str]:
+    return os.environ.get("GOOGLE_CLIENT_SECRET")
 
+
+def _get_app_url() -> str:
+    """Get the app's public URL for OAuth redirect."""
+    return os.environ.get("APP_URL", "http://localhost:8501")
+
+
+def _build_google_auth_url() -> Optional[str]:
+    """Build the Google OAuth2 authorization URL."""
     client_id = _get_google_client_id()
     if not client_id:
-        logger.error("GOOGLE_CLIENT_ID not set")
         return None
 
+    redirect_uri = _get_app_url()
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+
+
+def _exchange_google_code(code: str) -> Optional[dict]:
+    """Exchange an authorization code for user info via Google OAuth2."""
+    client_id = _get_google_client_id()
+    client_secret = _get_google_client_secret()
+    if not client_id or not client_secret:
+        logger.error("GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set")
+        return None
+
+    redirect_uri = _get_app_url()
+
     try:
-        idinfo = id_token.verify_oauth2_token(
-            token,
-            google_requests.Request(),
-            client_id,
+        token_resp = http_requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+            timeout=10,
         )
+        token_resp.raise_for_status()
+        tokens = token_resp.json()
+
+        userinfo_resp = http_requests.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+            timeout=10,
+        )
+        userinfo_resp.raise_for_status()
+        userinfo = userinfo_resp.json()
+
         return {
-            "email": idinfo.get("email", ""),
-            "name": idinfo.get("name", ""),
-            "picture": idinfo.get("picture", ""),
+            "email": userinfo.get("email", ""),
+            "name": userinfo.get("name", ""),
+            "picture": userinfo.get("picture", ""),
             "provider": "google",
         }
-    except ValueError as exc:
-        logger.warning(f"Google token verification failed: {exc}")
+    except Exception as exc:
+        logger.warning(f"Google OAuth2 token exchange failed: {exc}")
         return None
 
 
@@ -176,38 +213,16 @@ def _check_email_password(email: str, password: str) -> Optional[dict]:
 
 
 def _render_google_signin() -> None:
-    """Render Google Sign-In button using Streamlit's component API."""
-    client_id = _get_google_client_id()
-    if not client_id:
+    """Render Google Sign-In as a redirect link button."""
+    auth_url = _build_google_auth_url()
+    if not auth_url:
         return
 
-    google_auth_html = f"""
-    <div id="g_id_onload"
-         data-client_id="{client_id}"
-         data-callback="handleCredentialResponse"
-         data-auto_prompt="false">
-    </div>
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
-    <script>
-    function handleCredentialResponse(response) {{
-        const token = response.credential;
-        // Send token to Streamlit via query params
-        const url = new URL(window.location.href);
-        url.searchParams.set('google_token', token);
-        window.location.href = url.toString();
-    }}
-    </script>
-    <div id="g_id_signin"
-         class="g_id_signin"
-         data-type="standard"
-         data-shape="rectangular"
-         data-theme="filled_black"
-         data-text="signin_with"
-         data-size="large"
-         data-width="360">
-    </div>
-    """
-    st.components.v1.html(google_auth_html, height=50)
+    st.link_button(
+        "Sign in with Google",
+        url=auth_url,
+        use_container_width=True,
+    )
 
 
 def render_login_page() -> bool:
@@ -223,11 +238,11 @@ def render_login_page() -> bool:
         unsafe_allow_html=True,
     )
 
-    # Check for Google OAuth callback token in query params
+    # Check for Google OAuth2 callback code in query params
     params = st.query_params
-    google_token = params.get("google_token")
-    if google_token:
-        user_info = _verify_google_token(google_token)
+    auth_code = params.get("code")
+    if auth_code:
+        user_info = _exchange_google_code(auth_code)
         if user_info:
             st.session_state["authenticated"] = True
             st.session_state["user"] = user_info

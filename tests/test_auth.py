@@ -124,3 +124,22 @@ class TestGetGoogleClientId:
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
         from auth import _get_google_client_id
         assert _get_google_client_id() is None
+
+
+class TestBuildGoogleAuthUrl:
+    """Tests for _build_google_auth_url."""
+
+    def test_returns_url_when_client_id_set(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-id.apps.googleusercontent.com")
+        monkeypatch.setenv("APP_URL", "https://example.com")
+        from auth import _build_google_auth_url
+        url = _build_google_auth_url()
+        assert url is not None
+        assert "accounts.google.com" in url
+        assert "test-id.apps.googleusercontent.com" in url
+        assert "redirect_uri=https" in url
+
+    def test_returns_none_when_no_client_id(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+        from auth import _build_google_auth_url
+        assert _build_google_auth_url() is None
