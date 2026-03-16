@@ -25,7 +25,7 @@ class API:
     - Download results
     """
     
-    def __init__(self, config_path: str = "config/config.yaml"):
+    def __init__(self, config_path: str = "config/config.json"):
         """Initialize API."""
         self.config = load_config(config_path)
         self.pipeline = None

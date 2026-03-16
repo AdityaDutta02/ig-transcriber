@@ -2,7 +2,7 @@
 RapidAPI Fallback Downloader Module
 
 Provides fallback Instagram video downloading via RapidAPI-hosted endpoints
-when yt-dlp fails. Endpoints are configured in config/rapidapi_endpoints.yaml
+when yt-dlp fails. Endpoints are configured in config/rapidapi_endpoints.json
 so they can be changed in production without code edits.
 """
 
@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
-import yaml
+import json
+
 from loguru import logger
 
 
@@ -23,7 +24,7 @@ _DOWNLOAD_URL_FIELDS = ("url", "download_url", "link", "video_url")
 
 _REQUEST_TIMEOUT = 30  # seconds
 
-_ENDPOINTS_FILE = Path(__file__).parent.parent / "config" / "rapidapi_endpoints.yaml"
+_ENDPOINTS_FILE = Path(__file__).parent.parent / "config" / "rapidapi_endpoints.json"
 
 
 def load_endpoints(config_path: Path = _ENDPOINTS_FILE) -> List[Dict]:
@@ -37,7 +38,7 @@ def load_endpoints(config_path: Path = _ENDPOINTS_FILE) -> List[Dict]:
 
     try:
         with open(config_path, "r") as fh:
-            data = yaml.safe_load(fh)
+            data = json.load(fh)
         endpoints = data.get("endpoints", [])
         if not isinstance(endpoints, list):
             logger.warning(f"Invalid endpoints format in {config_path}")
@@ -52,7 +53,7 @@ def load_endpoints(config_path: Path = _ENDPOINTS_FILE) -> List[Dict]:
 class RapidAPIDownloader:
     """Fallback Instagram downloader using RapidAPI-hosted endpoints.
 
-    Endpoints are loaded from config/rapidapi_endpoints.yaml and tried
+    Endpoints are loaded from config/rapidapi_endpoints.json and tried
     in order. Edit that file to add, remove, or reorder backups —
     no code changes required.
     """
@@ -95,7 +96,7 @@ class RapidAPIDownloader:
             return (
                 False,
                 None,
-                "No RapidAPI endpoints configured in config/rapidapi_endpoints.yaml",
+                "No RapidAPI endpoints configured in config/rapidapi_endpoints.json",
                 "rapidapi_none",
             )
 

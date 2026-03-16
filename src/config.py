@@ -7,7 +7,8 @@ Handles loading and validation of configuration from YAML files and environment 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
+import json
+
 from pydantic import BaseModel, ConfigDict, Field, validator
 from pydantic_settings import BaseSettings
 
@@ -121,12 +122,12 @@ class AppConfig(BaseModel):
     error_handling: ErrorHandlingConfig
 
 
-def load_config(config_path: str = "config/config.yaml") -> AppConfig:
+def load_config(config_path: str = "config/config.json") -> AppConfig:
     """
-    Load configuration from YAML file.
+    Load configuration from JSON file.
 
     Args:
-        config_path: Path to configuration YAML file
+        config_path: Path to configuration JSON file
 
     Returns:
         AppConfig object with validated configuration
@@ -141,14 +142,14 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
     with open(config_file, "r") as f:
-        config_dict = yaml.safe_load(f)
+        config_dict = json.load(f)
 
     return AppConfig(**config_dict)
 
 
-def save_config(config: AppConfig, config_path: str = "config/config.yaml") -> None:
+def save_config(config: AppConfig, config_path: str = "config/config.json") -> None:
     """
-    Save configuration to YAML file.
+    Save configuration to JSON file.
 
     Args:
         config: AppConfig object
@@ -158,7 +159,7 @@ def save_config(config: AppConfig, config_path: str = "config/config.yaml") -> N
     config_file.parent.mkdir(parents=True, exist_ok=True)
 
     with open(config_file, "w") as f:
-        yaml.dump(config.model_dump(), f, default_flow_style=False, sort_keys=False)
+        json.dump(config.model_dump(), f, indent=2)
 
 
 if __name__ == "__main__":
