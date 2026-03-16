@@ -2,7 +2,7 @@
 yt-dlp>=2023.10.13
 groq>=0.9.0
 pandas>=2.0.0,<2.3.0
-pyyaml>=6.0.1
+pyyaml>=6.0.2
 
 # Performance & Utilities
 tqdm>=4.66.0
