@@ -120,6 +120,14 @@ class VideoDownloader:
                 'User-Agent': self.config.user_agent,
             },
         }
+
+        # YouTube OAuth2 authentication to bypass bot detection
+        cookies_path = os.environ.get("YT_COOKIES_PATH")
+        if cookies_path and Path(cookies_path).exists():
+            ydl_opts['cookiefile'] = cookies_path
+        elif platform == "youtube":
+            ydl_opts['username'] = 'oauth2'
+            ydl_opts['password'] = ''
         
         # Attempt download with retries
         for attempt in range(self.config.retry_attempts):
