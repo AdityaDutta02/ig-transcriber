@@ -121,13 +121,16 @@ class VideoDownloader:
             },
         }
 
-        # YouTube OAuth2 authentication to bypass bot detection
+        # YouTube authentication to bypass bot detection
         cookies_path = os.environ.get("YT_COOKIES_PATH")
         if cookies_path and Path(cookies_path).exists():
+            logger.info(f"Using YouTube cookies from {cookies_path}")
             ydl_opts['cookiefile'] = cookies_path
-        elif platform == "youtube":
-            ydl_opts['username'] = 'oauth2'
-            ydl_opts['password'] = ''
+        else:
+            if cookies_path:
+                logger.warning(f"YT_COOKIES_PATH set to {cookies_path} but file not found")
+            if os.environ.get("YT_COOKIES_B64"):
+                logger.warning("YT_COOKIES_B64 is set but cookie file was not decoded")
         
         # Attempt download with retries
         for attempt in range(self.config.retry_attempts):
