@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-set -e
 
 # ── Decode YouTube cookies if provided ────────────────────────────────
 if [ -n "$YT_COOKIES_B64" ]; then
-    echo "$YT_COOKIES_B64" | base64 -d > /tmp/yt_cookies.txt
-    export YT_COOKIES_PATH=/tmp/yt_cookies.txt
-    echo "Decoded YouTube cookies to /tmp/yt_cookies.txt"
+    if echo "$YT_COOKIES_B64" | base64 --decode > /tmp/yt_cookies.txt 2>/dev/null; then
+        export YT_COOKIES_PATH=/tmp/yt_cookies.txt
+        echo "Decoded YouTube cookies to /tmp/yt_cookies.txt"
+    else
+        echo "WARNING: Failed to decode YT_COOKIES_B64 — skipping cookies"
+        rm -f /tmp/yt_cookies.txt
+    fi
 fi
 
 # ── Start the PO Token server in the background ──────────────────────
-# The server was built during render build step (see build.sh).
-# It listens on 127.0.0.1:4416 — the bgutil plugin auto-discovers it.
 POT_SERVER_DIR="/opt/bgutil-server"
 if [ -f "$POT_SERVER_DIR/build/main.js" ]; then
     echo "Starting PO Token server on port 4416..."
