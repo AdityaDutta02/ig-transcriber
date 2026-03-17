@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ── Start the PO Token server in the background ──────────────────────
-POT_SERVER_DIR="/opt/bgutil-server"
+POT_SERVER_DIR="$HOME/bgutil-server"
 if [ -f "$POT_SERVER_DIR/build/main.js" ]; then
     echo "Starting PO Token server on port 4416..."
     node "$POT_SERVER_DIR/build/main.js" --port 4416 &

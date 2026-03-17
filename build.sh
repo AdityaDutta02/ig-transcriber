@@ -9,7 +9,7 @@ pip install -r requirements.txt
 # ── Build the PO Token server ─────────────────────────────────────────
 # Clones bgutil-ytdlp-pot-provider and compiles the TypeScript server.
 # At runtime, start.sh launches it as a background process.
-POT_SERVER_DIR="/opt/bgutil-server"
+POT_SERVER_DIR="$HOME/bgutil-server"
 
 echo "Setting up PO Token server..."
 rm -rf "$POT_SERVER_DIR"
