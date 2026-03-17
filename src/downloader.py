@@ -185,7 +185,7 @@ class VideoDownloader:
                             f"yt-dlp exhausted; trying RapidAPI YouTube MP3 for {video_id}"
                         )
                         ra_success, ra_audio, ra_error, ra_source = (
-                            rapidapi.download_youtube_mp3(video_id)
+                            rapidapi.download_youtube_mp3(video_id, self.temp_dir)
                         )
                     elif platform == "instagram":
                         logger.info(

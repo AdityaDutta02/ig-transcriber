@@ -135,19 +135,20 @@ class RapidAPIDownloader:
     def download_youtube_mp3(
         self,
         video_id: str,
-    ) -> Tuple[bool, Optional[str], Optional[str], str]:
-        """Get a direct MP3 URL for a YouTube video via youtube-mp36 RapidAPI.
+        output_dir: Optional[Path] = None,
+    ) -> Tuple[bool, Optional[Path], Optional[str], str]:
+        """Download YouTube video as MP3 via youtube-mp36 RapidAPI.
 
         Uses polling to handle the 'processing' status that the API may
-        return while converting the video.
+        return while converting the video. Downloads the MP3 immediately
+        to avoid link expiration.
 
         Args:
-            video_id: 11-character YouTube video ID.
+            video_id:   11-character YouTube video ID.
+            output_dir: Directory for the MP3 file (defaults to system temp).
 
         Returns:
-            (success, mp3_url, error_message, source_name)
-            The mp3_url is a direct download link — pass it straight to the
-            transcriber without saving to disk.
+            (success, audio_path, error_message, source_name)
         """
         source = "rapidapi_youtube_mp3"
 
@@ -182,8 +183,19 @@ class RapidAPIDownloader:
                         return False, None, "API returned ok but no download link", source
 
                     title = data.get("title", video_id)
-                    logger.info(f"YouTube MP3 ready: {title} → {mp3_link}")
-                    return True, mp3_link, None, source
+                    logger.info(f"YouTube MP3 ready: {title}")
+
+                    # Download immediately — these links expire quickly
+                    save_dir = Path(output_dir) if output_dir else Path(tempfile.gettempdir())
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    audio_path = save_dir / f"youtube_{video_id}.mp3"
+                    self._stream_download(mp3_link, audio_path)
+
+                    if not audio_path.exists():
+                        return False, None, "MP3 download produced no file", source
+
+                    logger.info(f"YouTube MP3 saved: {audio_path}")
+                    return True, audio_path, None, source
 
                 if status == "processing":
                     logger.debug(
