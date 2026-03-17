@@ -5,7 +5,6 @@ Streamlit-based interface for downloading and transcribing Instagram Reels
 and YouTube videos. Uses Groq Whisper Large v3 for cloud transcription.
 """
 
-import base64
 import os
 import sys
 from pathlib import Path
@@ -15,14 +14,6 @@ try:
     load_dotenv()
 except ImportError:
     pass
-
-# ── Decode YouTube cookies from env var (for server deployments) ─────────
-_yt_cookies_b64 = os.environ.get("YT_COOKIES_B64")
-if _yt_cookies_b64:
-    _cookies_path = "/tmp/yt_cookies.txt"
-    with open(_cookies_path, "wb") as _f:
-        _f.write(base64.b64decode(_yt_cookies_b64))
-    os.environ["YT_COOKIES_PATH"] = _cookies_path
 
 import streamlit as st
 
