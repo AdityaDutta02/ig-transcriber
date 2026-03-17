@@ -163,69 +163,79 @@ class RapidAPIDownloader:
         }
 
         max_polls = 10
-        poll_delay = 5  # seconds between retries
+        poll_delay = 5  # seconds between polls
+        max_download_retries = 3
+        last_error = None
 
-        try:
-            for attempt in range(max_polls):
-                resp = requests.get(
-                    api_url,
-                    headers=headers,
-                    params={"id": video_id},
-                    timeout=_REQUEST_TIMEOUT,
+        save_dir = Path(output_dir) if output_dir else Path(tempfile.gettempdir())
+        save_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = save_dir / f"youtube_{video_id}.mp3"
+
+        for dl_attempt in range(max_download_retries):
+            try:
+                mp3_link = None
+
+                for attempt in range(max_polls):
+                    resp = requests.get(
+                        api_url,
+                        headers=headers,
+                        params={"id": video_id},
+                        timeout=_REQUEST_TIMEOUT,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    logger.debug(f"youtube-mp36 response: {data}")
+                    status = data.get("status", "").lower()
+
+                    if status == "ok":
+                        mp3_link = data.get("link")
+                        break
+
+                    if status == "processing":
+                        logger.debug(
+                            f"YouTube MP3 still processing, poll {attempt + 1}/{max_polls} "
+                            f"(waiting {poll_delay}s)"
+                        )
+                        time.sleep(poll_delay)
+                        continue
+
+                    if status == "fail":
+                        msg = data.get("msg", "Unknown error from youtube-mp36 API")
+                        return False, None, f"API error: {msg}", source
+
+                    return False, None, f"Unexpected API status: {status}", source
+
+                if not mp3_link:
+                    return False, None, "Timed out waiting for MP3 processing", source
+
+                title = data.get("title", video_id)
+                logger.info(
+                    f"YouTube MP3 ready (attempt {dl_attempt + 1}): {title} → {mp3_link}"
                 )
-                resp.raise_for_status()
-                data = resp.json()
-                status = data.get("status", "").lower()
 
-                if status == "ok":
-                    mp3_link = data.get("link")
-                    if not mp3_link:
-                        return False, None, "API returned ok but no download link", source
+                # Download immediately — links expire quickly
+                self._stream_download(mp3_link, audio_path)
 
-                    title = data.get("title", video_id)
-                    logger.info(f"YouTube MP3 ready: {title}")
-
-                    # Download immediately — these links expire quickly
-                    save_dir = Path(output_dir) if output_dir else Path(tempfile.gettempdir())
-                    save_dir.mkdir(parents=True, exist_ok=True)
-                    audio_path = save_dir / f"youtube_{video_id}.mp3"
-                    self._stream_download(mp3_link, audio_path)
-
-                    if not audio_path.exists():
-                        return False, None, "MP3 download produced no file", source
-
+                if audio_path.exists() and audio_path.stat().st_size > 0:
                     logger.info(f"YouTube MP3 saved: {audio_path}")
                     return True, audio_path, None, source
 
-                if status == "processing":
-                    logger.debug(
-                        f"YouTube MP3 still processing, poll {attempt + 1}/{max_polls} "
-                        f"(waiting {poll_delay}s)"
-                    )
-                    time.sleep(poll_delay)
-                    continue
+                last_error = "MP3 download produced empty or no file"
 
-                if status == "fail":
-                    msg = data.get("msg", "Unknown error from youtube-mp36 API")
-                    return False, None, f"API error: {msg}", source
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(
+                    f"YouTube MP3 download attempt {dl_attempt + 1} failed: {last_error}"
+                )
+                # Clean up partial file
+                if audio_path.exists():
+                    audio_path.unlink(missing_ok=True)
 
-                # Unknown status — treat as error
-                return False, None, f"Unexpected API status: {status}", source
+            # Wait before retrying with a fresh link
+            if dl_attempt < max_download_retries - 1:
+                time.sleep(3)
 
-            return False, None, "Timed out waiting for MP3 processing", source
-
-        except requests.exceptions.Timeout:
-            return False, None, f"API request timed out after {_REQUEST_TIMEOUT}s", source
-        except requests.exceptions.HTTPError as exc:
-            return (
-                False, None,
-                f"API HTTP error: {exc.response.status_code} {exc.response.reason}",
-                source,
-            )
-        except requests.exceptions.RequestException as exc:
-            return False, None, f"API request failed: {exc}", source
-        except Exception as exc:
-            return False, None, f"Unexpected error: {exc}", source
+        return False, None, f"YouTube MP3 download failed after {max_download_retries} attempts: {last_error}", source
 
     # ------------------------------------------------------------------
     # Private API caller (generic, driven by JSON config)
@@ -360,8 +370,17 @@ class RapidAPIDownloader:
 
     def _stream_download(self, url: str, destination: Path) -> None:
         """Stream-download a URL to a local file."""
+        download_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+        }
         try:
-            with requests.get(url, stream=True, timeout=_REQUEST_TIMEOUT) as resp:
+            with requests.get(
+                url, stream=True, timeout=120, headers=download_headers
+            ) as resp:
                 resp.raise_for_status()
                 with open(destination, "wb") as fh:
                     for chunk in resp.iter_content(chunk_size=8192):
@@ -369,7 +388,7 @@ class RapidAPIDownloader:
                             fh.write(chunk)
         except requests.exceptions.Timeout as exc:
             raise RuntimeError(
-                f"Video download timed out after {_REQUEST_TIMEOUT}s"
+                f"Video download timed out after 120s"
             ) from exc
         except requests.exceptions.RequestException as exc:
             raise RuntimeError(f"Video download request failed: {exc}") from exc
