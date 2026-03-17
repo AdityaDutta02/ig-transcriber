@@ -182,8 +182,12 @@ class GroqTranscriber:
         # Route: URL → stream into memory; Path → read from disk
         is_url = isinstance(audio_source, str) and audio_source.startswith("http")
 
+        audio_path = None
+        upload_path = None
+
         if not is_url:
             audio_path = Path(audio_source) if isinstance(audio_source, str) else audio_source
+            upload_path = audio_path
             if not audio_path.exists():
                 return False, None, None, f"Audio file not found: {audio_path}"
 
@@ -270,8 +274,8 @@ class GroqTranscriber:
             logger.error(f"{source_label}: {error_msg}")
             return False, None, None, error_msg
         finally:
-            # Remove temporary compressed file if one was created
-            if upload_path != audio_path and upload_path.exists():
+            # Remove temporary compressed file if one was created (local files only)
+            if not is_url and upload_path != audio_path and upload_path.exists():
                 try:
                     upload_path.unlink()
                     logger.debug(f"Removed temporary file: {upload_path.name}")
