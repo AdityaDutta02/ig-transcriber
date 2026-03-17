@@ -5,12 +5,14 @@ Handles audio transcription using the Groq Whisper Large API.
 Processes audio files from the downloader and generates text transcriptions.
 """
 
+import io
 import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
+import requests
 from loguru import logger
 from tqdm import tqdm
 
@@ -156,14 +158,15 @@ class GroqTranscriber:
 
     def transcribe_audio(
         self,
-        audio_path: Path,
+        audio_source: Union[Path, str],
         language: Optional[str] = None,
     ) -> Tuple[bool, Optional[str], Optional[Dict], Optional[str]]:
         """
-        Transcribe a single audio file via the Groq Whisper Large v3 API.
+        Transcribe audio via the Groq Whisper Large v3 API.
 
         Args:
-            audio_path: Path to the audio file.
+            audio_source: Local file path (Path) or a direct MP3 URL (str
+                          starting with ``http``).
             language: Optional ISO-639-1 language code override (e.g. "en", "hi").
                       Pass None or "auto" for automatic language detection.
 
@@ -176,28 +179,44 @@ class GroqTranscriber:
                   segments_count, segments
               - error message (str | None)
         """
-        if not audio_path.exists():
-            return False, None, None, f"Audio file not found: {audio_path}"
+        # Route: URL → stream into memory; Path → read from disk
+        is_url = isinstance(audio_source, str) and audio_source.startswith("http")
+
+        if not is_url:
+            audio_path = Path(audio_source) if isinstance(audio_source, str) else audio_source
+            if not audio_path.exists():
+                return False, None, None, f"Audio file not found: {audio_path}"
 
         # Determine effective language (None == auto-detect in Whisper)
         effective_language: Optional[str] = language or self.config.language
         if effective_language == "auto":
             effective_language = None
 
-        upload_path = audio_path
         try:
-            upload_path = self._resolve_audio_path(audio_path)
             start_time = time.time()
 
-            logger.debug(f"Sending to Groq API: {upload_path.name}")
-
-            with open(upload_path, "rb") as audio_file:
+            if is_url:
+                logger.debug(f"Streaming audio from URL to Groq API")
+                resp = requests.get(str(audio_source), timeout=120)
+                resp.raise_for_status()
+                audio_file_obj = io.BytesIO(resp.content)
+                audio_file_obj.name = "audio.mp3"
                 response = self._client.audio.transcriptions.create(
                     model="whisper-large-v3",
-                    file=audio_file,
+                    file=audio_file_obj,
                     response_format="verbose_json",
                     language=effective_language,
                 )
+            else:
+                upload_path = self._resolve_audio_path(audio_path)
+                logger.debug(f"Sending to Groq API: {upload_path.name}")
+                with open(upload_path, "rb") as audio_file:
+                    response = self._client.audio.transcriptions.create(
+                        model="whisper-large-v3",
+                        file=audio_file,
+                        response_format="verbose_json",
+                        language=effective_language,
+                    )
 
             processing_time = time.time() - start_time
 
@@ -233,8 +252,9 @@ class GroqTranscriber:
                 "segments": segments_data,
             }
 
+            source_label = "URL" if is_url else audio_path.name
             logger.debug(
-                f"Transcribed {audio_path.name} in {processing_time:.2f}s — "
+                f"Transcribed {source_label} in {processing_time:.2f}s — "
                 f"language: {detected_language}, "
                 f"chars: {len(transcription)}, "
                 f"segments: {len(segments_data)}"
@@ -246,7 +266,8 @@ class GroqTranscriber:
             raise  # Let compression errors propagate unmodified
         except Exception as exc:
             error_msg = f"Transcription failed: {exc}"
-            logger.error(f"{audio_path.name}: {error_msg}")
+            source_label = "URL" if is_url else audio_path.name
+            logger.error(f"{source_label}: {error_msg}")
             return False, None, None, error_msg
         finally:
             # Remove temporary compressed file if one was created
@@ -285,8 +306,10 @@ class GroqTranscriber:
             for record in audio_records:
                 reel_id = record.get("reel_id", "unknown")
                 try:
-                    audio_file = Path(record["audio_file"])
-                    success, transcription, metadata, error = self.transcribe_audio(audio_file)
+                    audio_ref = record["audio_file"]
+                    if not str(audio_ref).startswith("http"):
+                        audio_ref = Path(audio_ref)
+                    success, transcription, metadata, error = self.transcribe_audio(audio_ref)
 
                     if success:
                         successful.append({

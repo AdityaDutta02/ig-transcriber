@@ -135,19 +135,19 @@ class RapidAPIDownloader:
     def download_youtube_mp3(
         self,
         video_id: str,
-        output_dir: Path,
-    ) -> Tuple[bool, Optional[Path], Optional[str], str]:
-        """Download YouTube video as MP3 via youtube-mp36 RapidAPI.
+    ) -> Tuple[bool, Optional[str], Optional[str], str]:
+        """Get a direct MP3 URL for a YouTube video via youtube-mp36 RapidAPI.
 
         Uses polling to handle the 'processing' status that the API may
         return while converting the video.
 
         Args:
-            video_id:   11-character YouTube video ID.
-            output_dir: Directory where the MP3 file will be saved.
+            video_id: 11-character YouTube video ID.
 
         Returns:
-            (success, audio_path, error_message, source_name)
+            (success, mp3_url, error_message, source_name)
+            The mp3_url is a direct download link — pass it straight to the
+            transcriber without saving to disk.
         """
         source = "rapidapi_youtube_mp3"
 
@@ -182,19 +182,8 @@ class RapidAPIDownloader:
                         return False, None, "API returned ok but no download link", source
 
                     title = data.get("title", video_id)
-                    logger.info(f"YouTube MP3 ready: {title}")
-
-                    # Download the MP3 to output dir
-                    output_dir = Path(output_dir)
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    audio_path = output_dir / f"youtube_{video_id}.mp3"
-                    self._stream_download(mp3_link, audio_path)
-
-                    if not audio_path.exists():
-                        return False, None, "MP3 download produced no file", source
-
-                    logger.info(f"YouTube MP3 saved: {audio_path}")
-                    return True, audio_path, None, source
+                    logger.info(f"YouTube MP3 ready: {title} → {mp3_link}")
+                    return True, mp3_link, None, source
 
                 if status == "processing":
                     logger.debug(

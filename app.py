@@ -125,8 +125,12 @@ def process_single_url(
             return result
 
         with st.spinner("Transcribing audio via Groq..."):
+            # audio_file is either a local Path or a direct MP3 URL
+            audio_ref = str(audio_file)
+            if not audio_ref.startswith("http"):
+                audio_ref = Path(audio_ref)
             tr_success, transcription, metadata, tr_error = transcriber.transcribe_audio(
-                Path(str(audio_file))
+                audio_ref
             )
 
         if not tr_success:
