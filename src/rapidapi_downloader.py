@@ -1,14 +1,15 @@
 """
 RapidAPI Fallback Downloader Module
 
-Provides fallback Instagram video downloading via RapidAPI-hosted endpoints
-when yt-dlp fails. Endpoints are configured in config/rapidapi_endpoints.json
-so they can be changed in production without code edits.
+Provides fallback downloading via RapidAPI-hosted endpoints when yt-dlp fails.
+- YouTube: Uses youtube-mp36 API to get direct MP3 links.
+- Instagram: Tries configured endpoints from config/rapidapi_endpoints.json.
 """
 
 import os
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -131,8 +132,102 @@ class RapidAPIDownloader:
         logger.error(f"{error_msg} for {video_id}")
         return False, None, error_msg, last_source
 
+    def download_youtube_mp3(
+        self,
+        video_id: str,
+        output_dir: Path,
+    ) -> Tuple[bool, Optional[Path], Optional[str], str]:
+        """Download YouTube video as MP3 via youtube-mp36 RapidAPI.
+
+        Uses polling to handle the 'processing' status that the API may
+        return while converting the video.
+
+        Args:
+            video_id:   11-character YouTube video ID.
+            output_dir: Directory where the MP3 file will be saved.
+
+        Returns:
+            (success, audio_path, error_message, source_name)
+        """
+        source = "rapidapi_youtube_mp3"
+
+        if not self._api_key:
+            return False, None, "RAPIDAPI_KEY environment variable is not set", source
+
+        api_url = "https://youtube-mp36.p.rapidapi.com/dl"
+        headers = {
+            "X-RapidAPI-Key": self._api_key,
+            "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com",
+            "Content-Type": "application/json",
+        }
+
+        max_polls = 10
+        poll_delay = 5  # seconds between retries
+
+        try:
+            for attempt in range(max_polls):
+                resp = requests.get(
+                    api_url,
+                    headers=headers,
+                    params={"id": video_id},
+                    timeout=_REQUEST_TIMEOUT,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                status = data.get("status", "").lower()
+
+                if status == "ok":
+                    mp3_link = data.get("link")
+                    if not mp3_link:
+                        return False, None, "API returned ok but no download link", source
+
+                    title = data.get("title", video_id)
+                    logger.info(f"YouTube MP3 ready: {title}")
+
+                    # Download the MP3 to output dir
+                    output_dir = Path(output_dir)
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    audio_path = output_dir / f"youtube_{video_id}.mp3"
+                    self._stream_download(mp3_link, audio_path)
+
+                    if not audio_path.exists():
+                        return False, None, "MP3 download produced no file", source
+
+                    logger.info(f"YouTube MP3 saved: {audio_path}")
+                    return True, audio_path, None, source
+
+                if status == "processing":
+                    logger.debug(
+                        f"YouTube MP3 still processing, poll {attempt + 1}/{max_polls} "
+                        f"(waiting {poll_delay}s)"
+                    )
+                    time.sleep(poll_delay)
+                    continue
+
+                if status == "fail":
+                    msg = data.get("msg", "Unknown error from youtube-mp36 API")
+                    return False, None, f"API error: {msg}", source
+
+                # Unknown status — treat as error
+                return False, None, f"Unexpected API status: {status}", source
+
+            return False, None, "Timed out waiting for MP3 processing", source
+
+        except requests.exceptions.Timeout:
+            return False, None, f"API request timed out after {_REQUEST_TIMEOUT}s", source
+        except requests.exceptions.HTTPError as exc:
+            return (
+                False, None,
+                f"API HTTP error: {exc.response.status_code} {exc.response.reason}",
+                source,
+            )
+        except requests.exceptions.RequestException as exc:
+            return False, None, f"API request failed: {exc}", source
+        except Exception as exc:
+            return False, None, f"Unexpected error: {exc}", source
+
     # ------------------------------------------------------------------
-    # Private API caller (generic, driven by YAML config)
+    # Private API caller (generic, driven by JSON config)
     # ------------------------------------------------------------------
 
     def _try_endpoint(self, endpoint: Dict, instagram_url: str) -> Optional[str]:

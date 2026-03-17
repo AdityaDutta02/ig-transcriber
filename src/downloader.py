@@ -153,15 +153,13 @@ class VideoDownloader:
                 error_msg = str(e)
                 logger.debug(f"Download attempt {attempt + 1} failed for {platform}/{video_id}: {error_msg}")
 
-                # Check if it's a private/deleted video
+                # Check if it's a truly private/deleted video (skip fallback)
                 if any(x in error_msg.lower() for x in ['private', 'not available', 'deleted', 'removed']):
                     logger.info(f"Video {platform}/{video_id} is private or unavailable")
                     return False, None, f"Video is private or unavailable: {error_msg}", platform
 
-                # Check if login is required
-                if 'login' in error_msg.lower():
-                    logger.info(f"Video {platform}/{video_id} requires login")
-                    return False, None, "Video requires login (private content)", platform
+                # "login required" from YouTube is usually bot detection, not
+                # actually private content — let it fall through to RapidAPI.
 
                 # If not last attempt, wait before retry
                 if attempt < self.config.retry_attempts - 1:
@@ -172,39 +170,46 @@ class VideoDownloader:
                     logger.warning(f"All retry attempts failed for {platform}/{video_id}: {error_msg}")
                     ytdlp_error = f"Download failed after {self.config.retry_attempts} attempts: {error_msg}"
 
-                    # Attempt RapidAPI fallback only for Instagram — never for YouTube.
-                    if platform == "instagram":
-                        if not os.environ.get("RAPIDAPI_KEY"):
-                            logger.info(
-                                "RAPIDAPI_KEY not set; skipping RapidAPI fallback"
-                            )
-                            return False, None, ytdlp_error, platform
+                    # Attempt RapidAPI fallback if key is available
+                    if not os.environ.get("RAPIDAPI_KEY"):
+                        logger.info(
+                            "RAPIDAPI_KEY not set; skipping RapidAPI fallback"
+                        )
+                        return False, None, ytdlp_error, platform
 
+                    from rapidapi_downloader import RapidAPIDownloader
+                    rapidapi = RapidAPIDownloader()
+
+                    if platform == "youtube":
+                        logger.info(
+                            f"yt-dlp exhausted; trying RapidAPI YouTube MP3 for {video_id}"
+                        )
+                        ra_success, ra_audio, ra_error, ra_source = (
+                            rapidapi.download_youtube_mp3(video_id, self.temp_dir)
+                        )
+                    elif platform == "instagram":
                         logger.info(
                             f"yt-dlp exhausted; trying RapidAPI fallback for {video_id}"
                         )
-                        from rapidapi_downloader import RapidAPIDownloader
-
-                        rapidapi = RapidAPIDownloader()
                         ra_success, ra_audio, ra_error, ra_source = (
                             rapidapi.download_instagram(url, self.temp_dir)
                         )
+                    else:
+                        return False, None, ytdlp_error, platform
 
-                        if ra_success:
-                            logger.info(
-                                f"RapidAPI fallback succeeded ({ra_source}) for {video_id}"
-                            )
-                            return True, ra_audio, None, ra_source
-
-                        logger.warning(
-                            f"RapidAPI fallback also failed for {video_id}: {ra_error}"
+                    if ra_success:
+                        logger.info(
+                            f"RapidAPI fallback succeeded ({ra_source}) for {video_id}"
                         )
-                        combined_error = (
-                            f"{ytdlp_error}; RapidAPI fallback: {ra_error}"
-                        )
-                        return False, None, combined_error, ra_source
+                        return True, ra_audio, None, ra_source
 
-                    return False, None, ytdlp_error, platform
+                    logger.warning(
+                        f"RapidAPI fallback also failed for {video_id}: {ra_error}"
+                    )
+                    combined_error = (
+                        f"{ytdlp_error}; RapidAPI fallback: {ra_error}"
+                    )
+                    return False, None, combined_error, ra_source
 
         return False, None, "Download failed", platform
     
