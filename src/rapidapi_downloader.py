@@ -61,6 +61,7 @@ class RapidAPIDownloader:
 
     def __init__(self) -> None:
         self._api_key: Optional[str] = os.environ.get("RAPIDAPI_KEY")
+        self._rapidapi_user: Optional[str] = os.environ.get("RAPIDAPI_USER")
         if not self._api_key:
             logger.warning(
                 "RAPIDAPI_KEY is not set — RapidAPI fallback will be unavailable"
@@ -369,14 +370,30 @@ class RapidAPIDownloader:
                     )
 
     def _stream_download(self, url: str, destination: Path) -> None:
-        """Stream-download a URL to a local file."""
+        """Stream-download a URL to a local file.
+
+        For youtube-mp36 CDN links, the server requires the RapidAPI
+        username in the User-Agent header to pass its secure-link check.
+        """
+        import hashlib
+
+        # youtube-mp36 CDN requires RapidAPI username for secure links
+        rapidapi_user = self._rapidapi_user or ""
+        ua_suffix = f" {rapidapi_user}" if rapidapi_user else ""
         download_headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
+                f"Chrome/131.0.0.0 Safari/537.36{ua_suffix}"
             ),
         }
+        # Also add X-RUN header (MD5 of username) as alternative auth
+        if rapidapi_user:
+            download_headers["X-RUN"] = hashlib.md5(
+                rapidapi_user.encode()
+            ).hexdigest()
+
+        logger.debug(f"Downloading with headers: {list(download_headers.keys())}")
         try:
             with requests.get(
                 url, stream=True, timeout=120, headers=download_headers
