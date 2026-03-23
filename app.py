@@ -33,6 +33,8 @@ from ui_helpers import (
 from auth import check_auth, render_user_menu
 from ui_styles import CUSTOM_CSS
 from utils import detect_platform, extract_video_id, validate_video_url
+from youtube_transcriber import fetch_transcript as fetch_yt_transcript
+from cobalt_downloader import download_audio as cobalt_download
 
 # ── Page config ───────────────────────────────────────────────────────────
 st.set_page_config(
@@ -72,6 +74,79 @@ def get_transcriber(_config):
         return None
 
 
+# ── YouTube transcript-first helper ───────────────────────────────────────
+
+def _youtube_transcript_first(url: str, operations: dict, transcriber) -> dict | None:
+    """Try YouTube captions, then Cobalt+Groq. Return result dict or None to fall through."""
+    from loguru import logger
+
+    # Tier 1: YouTube captions API (instant, no audio download)
+    with st.spinner("Fetching YouTube captions..."):
+        yt_result = fetch_yt_transcript(url)
+
+    if yt_result.success:
+        data = {
+            "url": url,
+            "platform": "youtube",
+            "source": yt_result.source,
+            "transcription": yt_result.text,
+            "language": yt_result.language,
+            "duration": None,
+            "segments": yt_result.segments or [],
+        }
+        segments = yt_result.segments or []
+        if operations.get("generate_captions") and segments:
+            caption_gen = CaptionGenerator(
+                words_per_line=operations.get("words_per_line", 10),
+                max_lines=operations.get("max_lines", 2),
+            )
+            data["srt_content"] = caption_gen.generate_srt(segments)
+            data["vtt_content"] = caption_gen.generate_vtt(segments)
+        return {"success": True, "data": data, "error": None}
+
+    logger.info(f"YouTube captions unavailable ({yt_result.error}), trying Cobalt")
+
+    # Tier 2: Cobalt audio download + Groq transcription
+    if transcriber is None:
+        logger.info("Cobalt skipped: no transcriber (GROQ_API_KEY not set)")
+        return None  # fall through to yt-dlp
+
+    with st.spinner("Downloading audio via Cobalt..."):
+        cobalt_ok, cobalt_audio, cobalt_err = cobalt_download(url)
+
+    if not cobalt_ok or not cobalt_audio:
+        logger.warning(f"Cobalt failed: {cobalt_err}")
+        return None  # fall through to yt-dlp
+
+    with st.spinner("Transcribing with Groq Whisper..."):
+        tr_ok, transcription, metadata, tr_err = transcriber.transcribe_audio(cobalt_audio)
+
+    cobalt_audio.unlink(missing_ok=True)
+
+    if not tr_ok:
+        logger.warning(f"Groq transcription of Cobalt audio failed: {tr_err}")
+        return None  # fall through to yt-dlp
+
+    data = {
+        "url": url,
+        "platform": "youtube",
+        "source": "cobalt_groq",
+        "transcription": transcription,
+        "language": metadata.get("language"),
+        "duration": metadata.get("duration"),
+        "segments": metadata.get("segments", []),
+    }
+    segments = metadata.get("segments", [])
+    if operations.get("generate_captions") and segments:
+        caption_gen = CaptionGenerator(
+            words_per_line=operations.get("words_per_line", 10),
+            max_lines=operations.get("max_lines", 2),
+        )
+        data["srt_content"] = caption_gen.generate_srt(segments)
+        data["vtt_content"] = caption_gen.generate_vtt(segments)
+    return {"success": True, "data": data, "error": None}
+
+
 # ── Processing helpers ────────────────────────────────────────────────────
 
 def process_single_url(
@@ -93,7 +168,20 @@ def process_single_url(
             result["error"] = "Download operation is required."
             return result
 
-        with st.spinner(f"Downloading from {detect_platform(url)}..."):
+        platform = detect_platform(url)
+
+        # ── YouTube transcript-first path ─────────────────────────────
+        # Fetch captions directly — no audio download, no Groq needed.
+        # Falls back to Cobalt audio download + Groq, then yt-dlp.
+        if platform == "youtube" and operations.get("transcribe"):
+            yt_result = _youtube_transcript_first(
+                url, operations, transcriber
+            )
+            if yt_result is not None:
+                return yt_result
+
+        # ── Standard download path (Instagram, or YouTube last-resort) ─
+        with st.spinner(f"Downloading from {platform}..."):
             dl_success, audio_file, dl_error, source = downloader.download_video(url)
 
         if not dl_success:
@@ -102,7 +190,7 @@ def process_single_url(
 
         result["data"] = {
             "url": url,
-            "platform": detect_platform(url) or "unknown",
+            "platform": platform or "unknown",
             "audio_file": str(audio_file),
             "source": source,
         }

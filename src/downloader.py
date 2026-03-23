@@ -60,16 +60,6 @@ class VideoDownloader:
         logger.info(f"Rate limit delay: {config.rate_limit_delay}s")
         logger.info("Supported platforms: Instagram, YouTube")
 
-        # PO token diagnostics — plugin auto-discovers server at 127.0.0.1:4416
-        try:
-            import importlib
-            pot_plugin = importlib.import_module("yt_dlp_plugins.extractor.getpot_bgutil_http")
-            logger.info("bgutil PO token plugin loaded (getpot_bgutil_http)")
-        except (ImportError, ModuleNotFoundError):
-            logger.warning(
-                "bgutil PO token plugin not loadable — "
-                "YouTube downloads may fail with bot detection"
-            )
     
     def _check_ytdlp(self) -> bool:
         """Check if yt-dlp is available."""
@@ -132,37 +122,6 @@ class VideoDownloader:
             },
         }
 
-        # yt-dlp 2025+ needs a JS runtime to solve YouTube challenges.
-        # Node.js is installed on Render but yt-dlp only enables deno by default.
-        if platform == "youtube":
-            ydl_opts['js_runtimes'] = 'node'
-
-        # Configure PO token provider for YouTube bot detection bypass.
-        # bgutil-ytdlp-pot-provider auto-discovers the server at 127.0.0.1:4416
-        # by default. Explicit extractor_args only needed for non-default URLs.
-        if platform == "youtube":
-            pot_base = os.environ.get("POT_SERVER_URL")
-            if pot_base and pot_base != "http://127.0.0.1:4416":
-                ydl_opts['extractor_args'] = {
-                    'youtubepot-bgutilhttp': {
-                        'base_url': [pot_base],
-                    },
-                }
-                logger.debug(f"PO token extractor arg set: base_url={pot_base}")
-            else:
-                logger.debug("PO token: using default auto-discovery (127.0.0.1:4416)")
-
-        # YouTube authentication to bypass bot detection
-        cookies_path = os.environ.get("YT_COOKIES_PATH")
-        if cookies_path and Path(cookies_path).exists():
-            logger.info(f"Using YouTube cookies from {cookies_path}")
-            ydl_opts['cookiefile'] = cookies_path
-        else:
-            if cookies_path:
-                logger.warning(f"YT_COOKIES_PATH set to {cookies_path} but file not found")
-            if os.environ.get("YT_COOKIES_B64"):
-                logger.warning("YT_COOKIES_B64 is set but cookie file was not decoded")
-        
         # Attempt download with retries
         for attempt in range(self.config.retry_attempts):
             try:
