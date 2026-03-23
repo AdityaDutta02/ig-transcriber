@@ -12,7 +12,10 @@ from typing import Optional, Tuple
 import requests
 from loguru import logger
 
-COBALT_INSTANCES: list[str] = ["https://cobalt-api.meowing.de"]
+COBALT_INSTANCES: list[str] = [
+    "https://cobalt-api.meowing.de",
+    "https://cobalt-api.kwiatekmiki.com",
+]
 _API_TIMEOUT = 30     # seconds — waiting for Cobalt to respond
 _DL_TIMEOUT = 120     # seconds — streaming the audio file to disk
 _MIN_FILE_SIZE = 1000 # bytes — sanity check after download
@@ -28,7 +31,7 @@ def _call_cobalt_api(
     instance_url: str, video_url: str
 ) -> Tuple[Optional[str], Optional[str]]:
     """POST to a Cobalt instance and return (download_url, error_message)."""
-    endpoint = f"{instance_url.rstrip('/')}/api/json"
+    endpoint = instance_url.rstrip('/')
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     payload = {"url": video_url, "downloadMode": "audio", "audioFormat": "mp3"}
     try:
@@ -42,10 +45,11 @@ def _call_cobalt_api(
     except ValueError as exc:
         return None, f"Cobalt returned non-JSON response: {exc}"
     status = data.get("status", "")
-    if status in ("error", "rate-limit", "redirect", "picker"):
+    if status in ("error", "rate-limit"):
         msg = data.get("text") or data.get("error", {}).get("code") or status
         logger.warning(f"Cobalt {instance_url} status '{status}': {msg}")
         return None, f"Cobalt error status '{status}': {msg}"
+    # "tunnel", "redirect", and "local-processing" are success statuses
     download_url: Optional[str] = data.get("url")
     if not download_url:
         return None, "Cobalt response contained no download URL"
