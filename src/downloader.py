@@ -116,9 +116,8 @@ class VideoDownloader:
         ydl_opts = {
             'format': self.config.format,
             'outtmpl': str(output_path),
-            'quiet': False,
-            'no_warnings': False,
-            'verbose': True,
+            'quiet': True,
+            'no_warnings': True,
             'extract_audio': True,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -132,6 +131,11 @@ class VideoDownloader:
                 'User-Agent': self.config.user_agent,
             },
         }
+
+        # yt-dlp 2025+ needs a JS runtime to solve YouTube challenges.
+        # Node.js is installed on Render but yt-dlp only enables deno by default.
+        if platform == "youtube":
+            ydl_opts['js_runtimes'] = 'node'
 
         # Configure PO token provider for YouTube bot detection bypass.
         # bgutil-ytdlp-pot-provider auto-discovers the server at 127.0.0.1:4416

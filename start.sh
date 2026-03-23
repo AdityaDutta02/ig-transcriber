@@ -63,7 +63,7 @@ except ImportError as e:
 echo "--- yt-dlp PO token test (extracting info only) ---"
 python -c "
 import yt_dlp
-ydl_opts = {'quiet': False, 'verbose': True, 'skip_download': True, 'extract_flat': True}
+ydl_opts = {'quiet': False, 'verbose': True, 'skip_download': True, 'extract_flat': True, 'js_runtimes': 'node'}
 try:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info('https://www.youtube.com/watch?v=dQw4w9WgXcQ', download=False)
