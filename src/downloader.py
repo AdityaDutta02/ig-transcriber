@@ -116,8 +116,9 @@ class VideoDownloader:
         ydl_opts = {
             'format': self.config.format,
             'outtmpl': str(output_path),
-            'quiet': True,
-            'no_warnings': True,
+            'quiet': False,
+            'no_warnings': False,
+            'verbose': True,
             'extract_audio': True,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',

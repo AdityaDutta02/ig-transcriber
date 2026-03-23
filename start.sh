@@ -12,7 +12,7 @@ if [ -f "$POT_SERVER_DIR/build/main.js" ]; then
     echo "Starting PO Token server on port 4416..."
     node "$POT_SERVER_DIR/build/main.js" --port 4416 &
     POT_PID=$!
-    sleep 5  # Give the server more time to start
+    sleep 20  # PO token server needs ~19s to initialize BotGuard
 
     if kill -0 "$POT_PID" 2>/dev/null; then
         echo "PO Token server process alive (PID $POT_PID)"
@@ -41,7 +41,7 @@ else
     fi
 fi
 
-echo "=== yt-dlp Plugin Check ==="
+echo "=== yt-dlp Plugin + PO Token Test ==="
 python -c "
 try:
     import yt_dlp
@@ -59,6 +59,18 @@ try:
 except ImportError as e:
     print(f'bgutil PO token script plugin: FAILED ({e})')
 " 2>&1
+# Quick yt-dlp test to verify PO token is being used
+echo "--- yt-dlp PO token test (extracting info only) ---"
+python -c "
+import yt_dlp
+ydl_opts = {'quiet': False, 'verbose': True, 'skip_download': True, 'extract_flat': True}
+try:
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info('https://www.youtube.com/watch?v=dQw4w9WgXcQ', download=False)
+        print(f'SUCCESS: extracted info for: {info.get(\"title\", \"unknown\")}')
+except Exception as e:
+    print(f'FAILED: {e}')
+" 2>&1 | grep -iE "pot|token|bgutil|sign in|bot|provider|error|success|WARNING" | head -20
 echo "==========================="
 
 # ── Start Streamlit ───────────────────────────────────────────────────
