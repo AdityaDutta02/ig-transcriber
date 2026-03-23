@@ -59,6 +59,16 @@ class VideoDownloader:
         logger.info(f"Temp directory: {self.temp_dir}")
         logger.info(f"Rate limit delay: {config.rate_limit_delay}s")
         logger.info("Supported platforms: Instagram, YouTube")
+
+        # PO token diagnostics
+        pot_base = os.environ.get("BGUTIL_POT_PROVIDER_HTTP_BASE")
+        if pot_base:
+            logger.info(f"PO Token server configured: {pot_base}")
+        else:
+            logger.warning(
+                "BGUTIL_POT_PROVIDER_HTTP_BASE not set — "
+                "PO token provider may fall back to script mode or be unavailable"
+            )
     
     def _check_ytdlp(self) -> bool:
         """Check if yt-dlp is available."""
@@ -120,6 +130,15 @@ class VideoDownloader:
                 'User-Agent': self.config.user_agent,
             },
         }
+
+        # Configure PO token provider for YouTube bot detection bypass
+        if platform == "youtube":
+            pot_base = os.environ.get("BGUTIL_POT_PROVIDER_HTTP_BASE")
+            if pot_base:
+                ydl_opts['extractor_args'] = {
+                    'youtubepot-bgutilhttp': f'base_url={pot_base}',
+                }
+                logger.debug(f"PO token extractor arg set: base_url={pot_base}")
 
         # YouTube authentication to bypass bot detection
         cookies_path = os.environ.get("YT_COOKIES_PATH")
