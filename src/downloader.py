@@ -60,14 +60,15 @@ class VideoDownloader:
         logger.info(f"Rate limit delay: {config.rate_limit_delay}s")
         logger.info("Supported platforms: Instagram, YouTube")
 
-        # PO token diagnostics
-        pot_base = os.environ.get("BGUTIL_POT_PROVIDER_HTTP_BASE")
-        if pot_base:
-            logger.info(f"PO Token server configured: {pot_base}")
-        else:
+        # PO token diagnostics — plugin auto-discovers server at 127.0.0.1:4416
+        try:
+            import importlib
+            pot_plugin = importlib.import_module("yt_dlp_plugins.extractor.getpot_bgutil_http")
+            logger.info("bgutil PO token plugin loaded (getpot_bgutil_http)")
+        except (ImportError, ModuleNotFoundError):
             logger.warning(
-                "BGUTIL_POT_PROVIDER_HTTP_BASE not set — "
-                "PO token provider may fall back to script mode or be unavailable"
+                "bgutil PO token plugin not loadable — "
+                "YouTube downloads may fail with bot detection"
             )
     
     def _check_ytdlp(self) -> bool:
@@ -131,14 +132,20 @@ class VideoDownloader:
             },
         }
 
-        # Configure PO token provider for YouTube bot detection bypass
+        # Configure PO token provider for YouTube bot detection bypass.
+        # bgutil-ytdlp-pot-provider auto-discovers the server at 127.0.0.1:4416
+        # by default. Explicit extractor_args only needed for non-default URLs.
         if platform == "youtube":
-            pot_base = os.environ.get("BGUTIL_POT_PROVIDER_HTTP_BASE")
-            if pot_base:
+            pot_base = os.environ.get("POT_SERVER_URL")
+            if pot_base and pot_base != "http://127.0.0.1:4416":
                 ydl_opts['extractor_args'] = {
-                    'youtubepot-bgutilhttp': f'base_url={pot_base}',
+                    'youtubepot-bgutilhttp': {
+                        'base_url': [pot_base],
+                    },
                 }
                 logger.debug(f"PO token extractor arg set: base_url={pot_base}")
+            else:
+                logger.debug("PO token: using default auto-discovery (127.0.0.1:4416)")
 
         # YouTube authentication to bypass bot detection
         cookies_path = os.environ.get("YT_COOKIES_PATH")
