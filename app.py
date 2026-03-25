@@ -34,7 +34,6 @@ from auth import check_auth, render_user_menu
 from ui_styles import CUSTOM_CSS
 from utils import detect_platform, extract_video_id, validate_video_url
 from youtube_transcriber import fetch_via_worker, fetch_via_supadata
-from browser_download import render_browser_download, save_browser_audio
 
 # ── Page config ───────────────────────────────────────────────────────────
 st.set_page_config(
@@ -90,11 +89,8 @@ def _build_yt_result(data: dict, operations: dict) -> dict:
 
 
 def _youtube_transcript_first(url: str, operations: dict, transcriber) -> dict | None:
-    """Three-tier YouTube transcription. Returns result dict or None to fall through to yt-dlp."""
+    """YouTube transcription: Worker → Supadata → fall through to yt-dlp."""
     from loguru import logger
-    from youtube_transcriber import extract_video_id
-
-    video_id = extract_video_id(url) or "unknown"
 
     # ── Tier 1: Cloudflare Worker (captions via edge network) ─────────
     with st.spinner("Fetching YouTube captions..."):
@@ -106,37 +102,16 @@ def _youtube_transcript_first(url: str, operations: dict, transcriber) -> dict |
             "duration": None, "segments": t1.segments or [],
         }, operations)
 
-    logger.info(f"Tier 1 failed ({t1.error}), trying browser download")
+    logger.info(f"Tier 1 Worker failed ({t1.error}), trying Supadata")
 
-    # ── Tier 2: Browser-side Cobalt (user's residential IP) ──────────
-    if transcriber is not None:
-        st.info("Downloading audio via your browser...")
-        b64_audio = render_browser_download(url)
-        if b64_audio:
-            ok, audio_path, err = save_browser_audio(b64_audio, video_id)
-            if ok and audio_path:
-                with st.spinner("Transcribing with Groq Whisper..."):
-                    tr_ok, text, meta, tr_err = transcriber.transcribe_audio(audio_path)
-                audio_path.unlink(missing_ok=True)
-                if tr_ok:
-                    return _build_yt_result({
-                        "url": url, "platform": "youtube", "source": "browser_groq",
-                        "transcription": text, "language": meta.get("language"),
-                        "duration": meta.get("duration"),
-                        "segments": meta.get("segments", []),
-                    }, operations)
-                logger.warning(f"Tier 2 Groq failed: {tr_err}")
-            else:
-                logger.warning(f"Tier 2 audio save failed: {err}")
-
-    # ── Tier 3: Supadata managed API ─────────────────────────────────
-    with st.spinner("Trying Supadata transcript API..."):
-        t3 = fetch_via_supadata(url)
-    if t3.success:
+    # ── Tier 2: Supadata managed API ─────────────────────────────────
+    with st.spinner("Fetching transcript via Supadata..."):
+        t2 = fetch_via_supadata(url)
+    if t2.success:
         return _build_yt_result({
-            "url": url, "platform": "youtube", "source": t3.source,
-            "transcription": t3.text, "language": t3.language,
-            "duration": None, "segments": t3.segments or [],
+            "url": url, "platform": "youtube", "source": t2.source,
+            "transcription": t2.text, "language": t2.language,
+            "duration": None, "segments": t2.segments or [],
         }, operations)
 
     logger.warning(f"All YouTube tiers failed for {video_id}")
