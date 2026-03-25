@@ -99,19 +99,19 @@ def fetch_via_worker(url: str, lang: str = "en") -> TranscriptResult:
         return TranscriptResult(success=False, error=str(exc))
 
 
-def fetch_via_supadata(url: str) -> TranscriptResult:
-    """Tier 3: Fetch transcript via Supadata managed API."""
+def fetch_via_supadata(url: str, lang: str = "en") -> TranscriptResult:
+    """Tier 2: Fetch transcript via Supadata managed API."""
     api_key = os.environ.get("SUPADATA_API_KEY")
     if not api_key:
         return TranscriptResult(success=False, error="SUPADATA_API_KEY not set")
 
     video_id = extract_video_id(url) or "unknown"
-    logger.info(f"Tier 3: fetching transcript from Supadata for {video_id}")
+    logger.info(f"Tier 2: fetching transcript from Supadata for {video_id} (lang={lang})")
 
     try:
         resp = requests.get(
             "https://api.supadata.ai/v1/transcript",
-            params={"url": url},
+            params={"url": url, "lang": lang},
             headers={"x-api-key": api_key},
             timeout=30,
         )
