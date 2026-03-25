@@ -159,12 +159,62 @@ Documenting for context — do not re-attempt these.
 
 ---
 
+## Future: Unlimited Free YouTube Transcripts via WARP
+
+Research into how working Cobalt instances (like `cobalt-api.meowing.de`, 96% uptime) bypass YouTube revealed the technique: **Cloudflare WARP (free) via Gluetun Docker container**.
+
+### How It Works
+
+1. A **Gluetun** Docker container connects to Cloudflare WARP via WireGuard (free)
+2. The app container routes all outbound traffic through Gluetun (`network_mode: service:gluetun`)
+3. YouTube sees Cloudflare WARP IPs — treated as legitimate, not datacenter
+4. Optional: IPv6 freebind rotation (`FREEBIND_CIDR`) to evade per-IP rate limits
+
+### What You'd Need
+
+- **$5/mo VPS** (Hetzner, DigitalOcean) with Docker
+- **Gluetun** container with WARP config (generate with `wgcf register && wgcf generate`)
+- **A tiny transcript proxy** — either `youtube-transcript-api` (Python) or yt-dlp behind the WARP tunnel
+- Render app calls the VPS proxy instead of Supadata
+
+### Cost Comparison
+
+| Approach | Monthly Cost | Request Limit | Maintenance |
+|----------|-------------|---------------|-------------|
+| Supadata (current) | $0–$9 | 100–1,000 | Zero |
+| VPS + WARP proxy | $5 | Unlimited | Docker, occasional player ID updates |
+
+### References
+
+- [Cloudflare WARP YouTube bypass guide](https://blog.arfevrier.fr/leveraging-cloudflare-warp-to-bypass-youtubes-api-restrictions/)
+- [Gluetun VPN container](https://github.com/qdm12/gluetun)
+- [wgcf — WARP credential generator](https://github.com/ViRb3/wgcf)
+- [Cobalt YouTube config docs](https://github.com/imputnet/cobalt/blob/main/docs/configure-for-youtube.md)
+- [imputnet/freebind.js — IPv6 rotation](https://github.com/imputnet/freebind.js/)
+
+### Implementation Plan (when ready)
+
+1. Provision a cheap VPS (Hetzner CX22, $5/mo)
+2. Install Docker, run Gluetun with WARP WireGuard config
+3. Run `youtube-transcript-api` or yt-dlp inside the WARP network
+4. Expose a simple HTTP API: `GET /transcript?v=VIDEO_ID&lang=en`
+5. Set `TRANSCRIPT_WORKER_URL` on Render to point to the VPS
+6. Supadata becomes Tier 3 backup instead of Tier 2
+
+---
+
 ## Next Steps (Suggested)
 
+### Immediate Cleanup
 1. **Delete dead code** — `browser_download.py`, YouTube RapidAPI code in `rapidapi_downloader.py`
 2. **Update `.env.example`** — Add `TRANSCRIPT_WORKER_URL`, `SUPADATA_API_KEY`
-3. **Monitor Supadata usage** — Track how many of the 100 free credits/month are used
-4. **Consider Supadata paid plan** — $9/mo for 1,000 if usage exceeds free tier
-5. **Add retry on Cloudflare Worker** — Sometimes 429 is transient; a retry after 2s might succeed
-6. **Create codebase index** — For faster future development sessions
-7. **Consolidate config files** — Pick YAML or JSON, not both
+3. **Create codebase index** — For faster future development sessions
+4. **Consolidate config files** — Pick YAML or JSON, not both
+
+### Monitoring
+5. **Track Supadata usage** — Monitor how many of 100 free credits/month are used
+6. **Add retry on Cloudflare Worker** — Sometimes 429 is transient; retry after 2s might succeed
+
+### When Usage Exceeds Free Tier
+7. **Option A:** Upgrade Supadata to $9/mo (1,000 credits) — simplest
+8. **Option B:** Deploy VPS + WARP proxy ($5/mo, unlimited) — see section above
