@@ -33,8 +33,8 @@ from ui_helpers import (
 from auth import check_auth, render_user_menu
 from ui_styles import CUSTOM_CSS
 from utils import detect_platform, extract_video_id, validate_video_url
-from youtube_transcriber import fetch_transcript as fetch_yt_transcript
-from cobalt_downloader import download_audio as cobalt_download
+from youtube_transcriber import fetch_via_worker, fetch_via_supadata
+from browser_download import render_browser_download, save_browser_audio
 
 # ── Page config ───────────────────────────────────────────────────────────
 st.set_page_config(
@@ -76,75 +76,71 @@ def get_transcriber(_config):
 
 # ── YouTube transcript-first helper ───────────────────────────────────────
 
-def _youtube_transcript_first(url: str, operations: dict, transcriber) -> dict | None:
-    """Try YouTube captions, then Cobalt+Groq. Return result dict or None to fall through."""
-    from loguru import logger
-
-    # Tier 1: YouTube captions API (instant, no audio download)
-    with st.spinner("Fetching YouTube captions..."):
-        yt_result = fetch_yt_transcript(url)
-
-    if yt_result.success:
-        data = {
-            "url": url,
-            "platform": "youtube",
-            "source": yt_result.source,
-            "transcription": yt_result.text,
-            "language": yt_result.language,
-            "duration": None,
-            "segments": yt_result.segments or [],
-        }
-        segments = yt_result.segments or []
-        if operations.get("generate_captions") and segments:
-            caption_gen = CaptionGenerator(
-                words_per_line=operations.get("words_per_line", 10),
-                max_lines=operations.get("max_lines", 2),
-            )
-            data["srt_content"] = caption_gen.generate_srt(segments)
-            data["vtt_content"] = caption_gen.generate_vtt(segments)
-        return {"success": True, "data": data, "error": None}
-
-    logger.info(f"YouTube captions unavailable ({yt_result.error}), trying Cobalt")
-
-    # Tier 2: Cobalt audio download + Groq transcription
-    if transcriber is None:
-        logger.info("Cobalt skipped: no transcriber (GROQ_API_KEY not set)")
-        return None  # fall through to yt-dlp
-
-    with st.spinner("Downloading audio via Cobalt..."):
-        cobalt_ok, cobalt_audio, cobalt_err = cobalt_download(url)
-
-    if not cobalt_ok or not cobalt_audio:
-        logger.warning(f"Cobalt failed: {cobalt_err}")
-        return None  # fall through to yt-dlp
-
-    with st.spinner("Transcribing with Groq Whisper..."):
-        tr_ok, transcription, metadata, tr_err = transcriber.transcribe_audio(cobalt_audio)
-
-    cobalt_audio.unlink(missing_ok=True)
-
-    if not tr_ok:
-        logger.warning(f"Groq transcription of Cobalt audio failed: {tr_err}")
-        return None  # fall through to yt-dlp
-
-    data = {
-        "url": url,
-        "platform": "youtube",
-        "source": "cobalt_groq",
-        "transcription": transcription,
-        "language": metadata.get("language"),
-        "duration": metadata.get("duration"),
-        "segments": metadata.get("segments", []),
-    }
-    segments = metadata.get("segments", [])
+def _build_yt_result(data: dict, operations: dict) -> dict:
+    """Attach SRT/VTT captions to a YouTube result dict if requested."""
+    segments = data.get("segments") or []
     if operations.get("generate_captions") and segments:
-        caption_gen = CaptionGenerator(
+        cg = CaptionGenerator(
             words_per_line=operations.get("words_per_line", 10),
             max_lines=operations.get("max_lines", 2),
         )
-        data["srt_content"] = caption_gen.generate_srt(segments)
-        data["vtt_content"] = caption_gen.generate_vtt(segments)
+        data["srt_content"] = cg.generate_srt(segments)
+        data["vtt_content"] = cg.generate_vtt(segments)
     return {"success": True, "data": data, "error": None}
+
+
+def _youtube_transcript_first(url: str, operations: dict, transcriber) -> dict | None:
+    """Three-tier YouTube transcription. Returns result dict or None to fall through to yt-dlp."""
+    from loguru import logger
+    from youtube_transcriber import extract_video_id
+
+    video_id = extract_video_id(url) or "unknown"
+
+    # ── Tier 1: Cloudflare Worker (captions via edge network) ─────────
+    with st.spinner("Fetching YouTube captions..."):
+        t1 = fetch_via_worker(url)
+    if t1.success:
+        return _build_yt_result({
+            "url": url, "platform": "youtube", "source": t1.source,
+            "transcription": t1.text, "language": t1.language,
+            "duration": None, "segments": t1.segments or [],
+        }, operations)
+
+    logger.info(f"Tier 1 failed ({t1.error}), trying browser download")
+
+    # ── Tier 2: Browser-side Cobalt (user's residential IP) ──────────
+    if transcriber is not None and t1.error == "no_captions":
+        st.info("No captions found. Downloading audio via your browser...")
+        b64_audio = render_browser_download(url)
+        if b64_audio:
+            ok, audio_path, err = save_browser_audio(b64_audio, video_id)
+            if ok and audio_path:
+                with st.spinner("Transcribing with Groq Whisper..."):
+                    tr_ok, text, meta, tr_err = transcriber.transcribe_audio(audio_path)
+                audio_path.unlink(missing_ok=True)
+                if tr_ok:
+                    return _build_yt_result({
+                        "url": url, "platform": "youtube", "source": "browser_groq",
+                        "transcription": text, "language": meta.get("language"),
+                        "duration": meta.get("duration"),
+                        "segments": meta.get("segments", []),
+                    }, operations)
+                logger.warning(f"Tier 2 Groq failed: {tr_err}")
+            else:
+                logger.warning(f"Tier 2 audio save failed: {err}")
+
+    # ── Tier 3: Supadata managed API ─────────────────────────────────
+    with st.spinner("Trying Supadata transcript API..."):
+        t3 = fetch_via_supadata(url)
+    if t3.success:
+        return _build_yt_result({
+            "url": url, "platform": "youtube", "source": t3.source,
+            "transcription": t3.text, "language": t3.language,
+            "duration": None, "segments": t3.segments or [],
+        }, operations)
+
+    logger.warning(f"All YouTube tiers failed for {video_id}")
+    return None  # fall through to yt-dlp as absolute last resort
 
 
 # ── Processing helpers ────────────────────────────────────────────────────

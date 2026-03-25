@@ -1,0 +1,5 @@
+{
+  "name": "youtube-transcript-worker",
+  "main": "src/index.js",
+  "compatibility_date": "2025-03-24"
+}

@@ -1,28 +1,26 @@
 """
 YouTube Transcript Fetcher
 
-Fetches YouTube captions/transcripts directly via the youtube-transcript-api
-package, bypassing audio download entirely. This is the preferred method for
-YouTube URL transcription.
+Tier 1: Cloudflare Worker — fetches captions from YouTube via edge network.
+Tier 3: Supadata API — managed transcript service with AI fallback.
+
+Tier 2 (browser-side Cobalt) is handled in browser_download.py + app.py.
 """
 
+from __future__ import annotations
+
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+import requests
 from loguru import logger
-_ARTIFACT_PATTERN = re.compile(r"\[(?:Music|Applause|Laughter|Noise|Sound)\]", re.IGNORECASE)
-_VIDEO_ID_PATTERNS = [
-    re.compile(r"(?:v=|/v/)([A-Za-z0-9_-]{11})"),
-    re.compile(r"youtu\.be/([A-Za-z0-9_-]{11})"),
-    re.compile(r"/shorts/([A-Za-z0-9_-]{11})"),
-    re.compile(r"/embed/([A-Za-z0-9_-]{11})"),
-]
 
 
 @dataclass
 class TranscriptResult:
-    """Result of a YouTube transcript fetch operation."""
+    """Result of a YouTube transcript fetch."""
     success: bool
     text: Optional[str] = None
     segments: Optional[list[dict]] = None
@@ -31,107 +29,126 @@ class TranscriptResult:
     source: str = field(default="youtube_captions")
 
 
-def _fail(msg: str, level: str = "error") -> TranscriptResult:
-    """Log msg at level and return a failed TranscriptResult."""
-    getattr(logger, level)(msg)
-    return TranscriptResult(success=False, error=msg)
-
-
 def extract_video_id(url: str) -> Optional[str]:
-    """Extract the 11-char YouTube video ID from watch, youtu.be, shorts, or embed URLs."""
-    if not url:
-        return None
-    for pattern in _VIDEO_ID_PATTERNS:
-        match = pattern.search(url)
+    """Extract 11-char YouTube video ID from various URL formats."""
+    patterns = [
+        r"(?:v=|/v/)([A-Za-z0-9_-]{11})",
+        r"youtu\.be/([A-Za-z0-9_-]{11})",
+        r"/shorts/([A-Za-z0-9_-]{11})",
+        r"/embed/([A-Za-z0-9_-]{11})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
         if match:
-            video_id = match.group(1)
-            logger.debug(f"Extracted video ID '{video_id}' from URL: {url}")
-            return video_id
-    logger.warning(f"Could not extract video ID from URL: {url}")
+            return match.group(1)
     return None
 
 
-def _resolve_transcript(transcript_list: object, preferred_languages: list[str], video_id: str) -> tuple:
-    """Try each preferred language in order, then fall back to any available transcript."""
-    from youtube_transcript_api import NoTranscriptFound  # type: ignore[import-untyped]
-    for lang in preferred_languages:
-        try:
-            transcript = transcript_list.find_transcript([lang])
-            logger.debug(f"Found transcript in preferred language: {lang}")
-            return transcript, lang
-        except NoTranscriptFound:
-            logger.debug(f"No transcript for '{lang}' on video {video_id}")
-    available = list(transcript_list)
-    if not available:
-        raise ValueError(f"No transcripts available for video {video_id}")
-    transcript = available[0]
-    lang_code: str = transcript.language_code
-    logger.info(f"Falling back to available language: {lang_code}")
-    return transcript, lang_code
-
-
-def _build_segments(raw_snippets: list) -> tuple[list[dict], str]:
-    """Convert raw FetchedTranscriptSnippet objects into timed segments and plain text."""
-    segments: list[dict] = []
-    text_parts: list[str] = []
-    for snippet in raw_snippets:
-        start: float = float(getattr(snippet, "start", 0.0))
-        duration: float = float(getattr(snippet, "duration", 0.0))
-        raw_text: str = getattr(snippet, "text", "") or ""
-        cleaned = _ARTIFACT_PATTERN.sub("", raw_text).strip()
-        if not cleaned:
-            continue
-        segments.append({"start": start, "end": round(start + duration, 3), "text": cleaned})
-        text_parts.append(cleaned)
-    return segments, " ".join(text_parts).strip()
-
-
-def _classify_error(video_id: str, exc: Exception) -> TranscriptResult:
-    """Map a generic exception to a rate-limit or unexpected-error TranscriptResult."""
-    exc_str = str(exc).lower()
-    if "too many requests" in exc_str or "blocked" in exc_str or "429" in exc_str:
-        msg = f"YouTube is rate-limiting transcript requests for {video_id}: {exc}"
-    else:
-        msg = f"Unexpected error fetching transcript for {video_id}: {exc}"
-    return _fail(msg)
-
-
-def fetch_transcript(url: str, preferred_languages: Optional[list[str]] = None) -> TranscriptResult:
-    """
-    Fetch captions for a YouTube video without downloading audio.
-
-    Tries preferred_languages in order (default: ["en"]), then any available language.
-    Strips [Music] and similar auto-caption artifacts from the output text.
-    """
-    try:
-        from youtube_transcript_api import (  # type: ignore[import-untyped]
-            YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled, VideoUnavailable,
-        )
-    except ImportError:
-        return _fail("youtube-transcript-api not installed. Run: pip install youtube-transcript-api")
-
-    if preferred_languages is None:
-        preferred_languages = ["en"]
+def fetch_via_worker(url: str, lang: str = "en") -> TranscriptResult:
+    """Tier 1: Fetch transcript via Cloudflare Worker."""
+    worker_url = os.environ.get("TRANSCRIPT_WORKER_URL")
+    if not worker_url:
+        return TranscriptResult(success=False, error="TRANSCRIPT_WORKER_URL not set")
 
     video_id = extract_video_id(url)
     if not video_id:
-        return _fail(f"Could not extract video ID from URL: {url}")
+        return TranscriptResult(success=False, error=f"Could not extract video ID from: {url}")
 
-    logger.info(f"Fetching transcript for video ID: {video_id}")
+    endpoint = f"{worker_url.rstrip('/')}/?v={video_id}&lang={lang}"
+    logger.info(f"Tier 1: fetching transcript from Worker for {video_id}")
+
     try:
-        transcript_list = YouTubeTranscriptApi().list(video_id)
-        transcript, language = _resolve_transcript(transcript_list, preferred_languages, video_id)
-        segments, plain_text = _build_segments(transcript.fetch())
+        resp = requests.get(endpoint, timeout=15)
+        data = resp.json()
+
+        if resp.status_code == 404 and data.get("error") == "no_captions":
+            logger.info(f"Worker: no captions for {video_id}")
+            return TranscriptResult(success=False, error="no_captions")
+
+        if resp.status_code != 200:
+            error_msg = data.get("error", f"HTTP {resp.status_code}")
+            logger.warning(f"Worker error for {video_id}: {error_msg}")
+            return TranscriptResult(success=False, error=error_msg)
+
+        full_text = data.get("fullText", "")
+        segments = data.get("segments", [])
+        language = data.get("language", lang)
+
+        std_segments = []
+        for seg in segments:
+            start = seg.get("start", 0)
+            dur = seg.get("dur", 0)
+            std_segments.append({
+                "start": start,
+                "end": round(start + dur, 3),
+                "text": seg.get("text", ""),
+            })
+
         logger.info(
-            f"Transcript fetched: video={video_id}, language={language}, "
-            f"segments={len(segments)}, chars={len(plain_text)}"
+            f"Worker: transcript for {video_id}, "
+            f"{len(std_segments)} segments, {len(full_text)} chars"
         )
-        return TranscriptResult(success=True, text=plain_text, segments=segments, language=language)
-    except TranscriptsDisabled:
-        return _fail(f"Transcripts are disabled for video {video_id}", level="warning")
-    except VideoUnavailable:
-        return _fail(f"Video is unavailable: {video_id}", level="warning")
-    except (NoTranscriptFound, ValueError) as exc:
-        return _fail(str(exc), level="warning")
+        return TranscriptResult(
+            success=True, text=full_text, segments=std_segments,
+            language=language, source="cloudflare_worker",
+        )
+    except requests.exceptions.Timeout:
+        return TranscriptResult(success=False, error="Worker request timed out")
     except Exception as exc:
-        return _classify_error(video_id, exc)
+        logger.warning(f"Worker failed for {video_id}: {exc}")
+        return TranscriptResult(success=False, error=str(exc))
+
+
+def fetch_via_supadata(url: str) -> TranscriptResult:
+    """Tier 3: Fetch transcript via Supadata managed API."""
+    api_key = os.environ.get("SUPADATA_API_KEY")
+    if not api_key:
+        return TranscriptResult(success=False, error="SUPADATA_API_KEY not set")
+
+    video_id = extract_video_id(url) or "unknown"
+    logger.info(f"Tier 3: fetching transcript from Supadata for {video_id}")
+
+    try:
+        resp = requests.get(
+            "https://api.supadata.ai/v1/transcript",
+            params={"url": url},
+            headers={"x-api-key": api_key},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            return TranscriptResult(
+                success=False,
+                error=f"Supadata HTTP {resp.status_code}: {resp.text[:200]}",
+            )
+
+        data = resp.json()
+        content = data.get("content") or data.get("transcript") or ""
+        if not content:
+            return TranscriptResult(success=False, error="Supadata returned empty transcript")
+
+        segments = []
+        if isinstance(content, list):
+            for item in content:
+                start = item.get("offset", item.get("start", 0))
+                dur = item.get("duration", item.get("dur", 0))
+                segments.append({
+                    "start": start,
+                    "end": round(start + dur, 3),
+                    "text": item.get("text", ""),
+                })
+            full_text = " ".join(s["text"] for s in segments)
+        else:
+            full_text = str(content)
+
+        lang = data.get("lang", data.get("language", "en"))
+        logger.info(f"Supadata: transcript for {video_id}, {len(full_text)} chars")
+        return TranscriptResult(
+            success=True, text=full_text,
+            segments=segments if segments else None,
+            language=lang, source="supadata",
+        )
+    except requests.exceptions.Timeout:
+        return TranscriptResult(success=False, error="Supadata request timed out")
+    except Exception as exc:
+        logger.warning(f"Supadata failed for {video_id}: {exc}")
+        return TranscriptResult(success=False, error=str(exc))
