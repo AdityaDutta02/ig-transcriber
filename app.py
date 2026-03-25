@@ -109,8 +109,8 @@ def _youtube_transcript_first(url: str, operations: dict, transcriber) -> dict |
     logger.info(f"Tier 1 failed ({t1.error}), trying browser download")
 
     # ── Tier 2: Browser-side Cobalt (user's residential IP) ──────────
-    if transcriber is not None and t1.error == "no_captions":
-        st.info("No captions found. Downloading audio via your browser...")
+    if transcriber is not None:
+        st.info("Downloading audio via your browser...")
         b64_audio = render_browser_download(url)
         if b64_audio:
             ok, audio_path, err = save_browser_audio(b64_audio, video_id)
@@ -320,8 +320,8 @@ def render_results_card(data: dict, url: str) -> None:
         lang = data.get("language", "unknown")
         st.metric("Language", lang.upper() if lang else "N/A")
     with m3:
-        duration = data.get("duration", 0)
-        st.metric("Duration", f"{duration:.1f}s")
+        duration = data.get("duration")
+        st.metric("Duration", f"{duration:.1f}s" if duration else "N/A")
 
     # Transcription text area
     st.text_area(
